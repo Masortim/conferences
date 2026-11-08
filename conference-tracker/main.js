@@ -2,9 +2,15 @@
  * Conference Tracker — виджет Obsidian для отслеживания дат форумов,
  * выставок, конференций и дней поля.
  *
+ * Ключевые идеи:
+ *  - у события есть «проведения» (editions): каждое со своими датами и местом;
+ *  - карточка показывает ближайшее/текущее проведение и то, где и когда
+ *    событие было в прошлый раз;
+ *  - даты и места могут подтягиваться автоматически с официальных сайтов
+ *    (JSON-LD, микроразметка, текстовые даты), ручные правки не затираются.
+ *
  * Плагин не требует сборки: это обычный CommonJS-файл, который Obsidian
- * загружает напрямую. Вся логика дат вынесена в чистые функции и покрыта
- * тестами (см. tests/).
+ * загружает напрямую. Чистые функции покрыты тестами (см. tests/).
  */
 
 'use strict';
@@ -19,10 +25,13 @@ const Modal = obsidian.Modal;
 const MarkdownRenderChild = obsidian.MarkdownRenderChild;
 const Notice = obsidian.Notice || function noopNotice() {};
 const setIcon = typeof obsidian.setIcon === 'function' ? obsidian.setIcon : function noopSetIcon() {};
+const requestUrl = typeof obsidian.requestUrl === 'function' ? obsidian.requestUrl : null;
 
 const VIEW_TYPE = 'conference-tracker-view';
 const CODE_BLOCK = 'conferences';
-const DATA_VERSION = 1;
+const DATA_VERSION = 2;
+const SYNC_TIMEOUT_MS = 15000;
+const MAX_EDITIONS = 12;
 
 const CATEGORIES = ['Форум', 'Выставка', 'Конференция', 'День поля', 'Другое'];
 const VIEW_MODES = ['upcoming', 'all', 'past'];
@@ -42,17 +51,26 @@ const MONTHS_GENITIVE = [
   'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
 ];
 
+const STOP_WORDS = new Set([
+  'день', 'поля', 'форум', 'выставка', 'конференция', 'всероссийский',
+  'международный', 'ежегодный', 'аграрный', 'агропромышленный',
+]);
+
 const DEFAULT_SETTINGS = {
   showPast: true,
   showTentative: true,
   showHero: true,
   openOnStartup: false,
+  autoSync: true,
+  syncIntervalHours: 12,
+  lastSyncAt: '',
+  lastSyncSummary: '',
 };
 
 /**
- * События, которые добавляются при первом запуске плагина.
- * Даты проверены по официальным источникам на 8 ноября 2026 года.
- * После установки их можно спокойно менять и удалять.
+ * События и история их проведений на 8 ноября 2026 года.
+ * Проверено по официальным источникам; места указаны для каждого года,
+ * потому что часть мероприятий ежегодно переезжает (например, «День поля»).
  */
 const DEFAULT_EVENTS = [
   {
@@ -60,39 +78,81 @@ const DEFAULT_EVENTS = [
     title: 'Агронеделя',
     fullTitle: 'Сибирская аграрная неделя',
     category: 'Выставка',
-    start: '2026-11-10',
-    end: '2026-11-12',
-    expectedMonth: '',
-    place: 'Новосибирск · МВК «Новосибирск Экспоцентр», ул. Станционная, 104',
     url: 'https://sibagroweek.ru/',
-    note: 'Международная агропромышленная выставка и Новосибирский агропродовольственный форум. Даты следующей недели обычно объявляют летом.',
-    previous: '2025 — 5–7 ноября',
+    note: 'Международная агропромышленная выставка и Новосибирский агропродовольственный форум.',
+    expectedMonth: '2027-11',
+    editions: [
+      {
+        start: '2026-11-10',
+        end: '2026-11-12',
+        place: 'Новосибирск · МВК «Новосибирск Экспоцентр»',
+      },
+      {
+        start: '2025-11-05',
+        end: '2025-11-07',
+        place: 'Новосибирск · МВК «Новосибирск Экспоцентр»',
+      },
+      {
+        start: '2024-11-06',
+        end: '2024-11-08',
+        place: 'Новосибирск · МВК «Новосибирск Экспоцентр»',
+      },
+    ],
+    sync: { sources: ['https://sibagroweek.ru/'] },
   },
   {
     id: 'technoprom',
     title: 'Технопром',
     fullTitle: 'Международный форум технологического развития',
     category: 'Форум',
-    start: '',
-    end: '',
-    expectedMonth: '2027-08',
-    place: 'Новосибирск · «Новосибирск Экспоцентр»',
     url: 'https://форумтехнопром.рф/',
-    note: 'XIII форум прошёл 26–28 августа 2026 года. Даты 2027 года пока не объявлены — уточняйте на официальном сайте.',
-    previous: '2026 — 26–28 августа',
+    note: 'Даты 2027 года пока не объявлены — уточняйте на официальном сайте.',
+    expectedMonth: '2027-08',
+    editions: [
+      {
+        start: '2026-08-26',
+        end: '2026-08-28',
+        place: 'Новосибирск · «Новосибирск Экспоцентр»',
+      },
+      {
+        start: '2025-08-27',
+        end: '2025-08-30',
+        place: 'Новосибирск · «Новосибирск Экспоцентр»',
+      },
+      {
+        start: '2024-08-27',
+        end: '2024-08-30',
+        place: 'Новосибирск · «Новосибирск Экспоцентр»',
+      },
+    ],
+    sync: { sources: ['https://форумтехнопром.рф/'] },
   },
   {
     id: 'field-day',
     title: 'День поля',
-    fullTitle: 'День поля Новосибирской области',
+    fullTitle: 'Всероссийский день поля',
     category: 'День поля',
-    start: '',
-    end: '',
+    url: 'https://russian-field-day.ru/',
+    note: 'Главная полевая выставка страны, ежегодно меняет регион: 2024 — Ставрополье, 2025 — Волгоградская область, 2026 — Алтайский край. Даты и место 2027 года уточняются.',
     expectedMonth: '2027-07',
-    place: 'Новосибирский район · учхоз «Практик», п. Тулинский',
-    url: 'https://mcx.nso.ru/page/3447',
-    note: 'Обычно проходит в конце июля — начале августа. Точную дату публикует Минсельхоз Новосибирской области.',
-    previous: '',
+    editions: [
+      {
+        start: '2026-07-16',
+        end: '2026-07-18',
+        place: 'Алтайский край · Сибирский агропарк, пос. Прутской',
+      },
+      {
+        start: '2025-07-03',
+        end: '2025-07-05',
+        place: 'Волгоградская область · КФХ «Чердынцев», Среднеахтубинский район',
+      },
+      {
+        start: '2024-06-20',
+        end: '2024-06-22',
+        place: 'Ставропольский край · МВЦ «МинводыЭКСПО», х. Красный Пахарь',
+      },
+    ],
+    sync: { sources: ['https://russian-field-day.ru/'] },
   },
 ];
 
@@ -104,7 +164,7 @@ function pad2(value) {
   return String(value).padStart(2, '0');
 }
 
-/** Проверяет строку формата ГГГГ-ММ-ДД (с учётом реального календаря). */
+/** Разбирает ГГГГ-ММ-ДД; возвращает null для несуществующих дат. */
 function parseISODate(value) {
   if (typeof value !== 'string') return null;
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
@@ -125,19 +185,19 @@ function parseISODate(value) {
     return null;
   }
 
-  return {
-    year,
-    month,
-    day,
-    stamp: Math.round(stamp / 86400000),
-  };
+  return { year, month, day, stamp: Math.round(stamp / 86400000) };
 }
 
 function isValidISODate(value) {
   return parseISODate(value) !== null;
 }
 
-/** Номер дня (UTC) для локальной календарной даты — без сюрпризов с часовыми поясами. */
+function makeISO(year, month, day) {
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return '';
+  const iso = `${year}-${pad2(month)}-${pad2(day)}`;
+  return isValidISODate(iso) ? iso : '';
+}
+
 function dayNumberFromDate(date) {
   return Math.round(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000);
 }
@@ -158,6 +218,12 @@ function monthKey(value) {
   return parsed ? parsed.year * 100 + parsed.month : 0;
 }
 
+/** Номер месяца (ГГГГММ) для дня, посчитанного от 1970-01-01. */
+function monthKeyAt(dayNumber) {
+  const date = new Date(dayNumber * 86400000);
+  return date.getUTCFullYear() * 100 + date.getUTCMonth() + 1;
+}
+
 /** «10 ноября 2026» */
 function formatDateRu(value) {
   const parsed = parseISODate(value);
@@ -165,7 +231,7 @@ function formatDateRu(value) {
   return `${parsed.day} ${MONTHS_GENITIVE[parsed.month - 1]} ${parsed.year}`;
 }
 
-/** «10–12 ноября 2026», «28 февраля — 2 марта 2027», «10 ноября 2026» */
+/** «10–12 ноября 2026», «28 февраля — 2 марта 2027» */
 function formatRangeRu(start, end) {
   const from = parseISODate(start);
   if (!from) return '';
@@ -175,7 +241,6 @@ function formatRangeRu(start, end) {
     return formatDateRu(start);
   }
 
-  // Если даты введены в обратном порядке — показываем по возрастанию.
   const first = to.stamp > from.stamp ? from : to;
   const last = to.stamp > from.stamp ? to : from;
 
@@ -195,20 +260,28 @@ function formatRangeRu(start, end) {
   )}`;
 }
 
-/** «август 2027» — для ориентировочных дат. */
 function formatMonthRu(value) {
   const parsed = parseMonth(value);
   if (!parsed) return '';
   return `${MONTHS_NOMINATIVE[parsed.month - 1]} ${parsed.year}`;
 }
 
-/** «Август 2027» — для заголовков групп. */
 function formatMonthTitle(value) {
   const formatted = formatMonthRu(value);
   return formatted ? formatted.charAt(0).toUpperCase() + formatted.slice(1) : '';
 }
 
-/** Русские формы множественного числа: pluralRu(3, ['день','дня','дней']) → 'дня' */
+/** «08.11.2026, 14:05» из ISO-строки */
+function formatDateTimeRu(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return (
+    `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}.${date.getFullYear()}, ` +
+    `${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+  );
+}
+
+/** Русские формы множественного числа. */
 function pluralRu(count, forms) {
   const abs = Math.abs(count) % 100;
   const last = abs % 10;
@@ -218,24 +291,21 @@ function pluralRu(count, forms) {
   return forms[2];
 }
 
+/* ------------------------------------------------------------------ */
+/* Проведения и их состояния                                           */
+/* ------------------------------------------------------------------ */
+
 /**
- * Состояние события на заданный день.
- * kind: tentative | upcoming | ongoing | past.
+ * Состояние одного проведения: upcoming | ongoing | past.
+ * Для пустых дат возвращает tentative.
  */
-function getEventState(event, nowDay) {
+function editionState(edition, nowDay) {
   const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
-  const source = event && typeof event === 'object' ? event : {};
+  const source = edition && typeof edition === 'object' ? edition : {};
   const start = parseISODate(source.start);
 
   if (!start) {
-    return {
-      kind: 'tentative',
-      startDay: null,
-      endDay: null,
-      length: 0,
-      days: null,
-      daysAgo: null,
-    };
+    return { kind: 'tentative', startDay: null, endDay: null, length: 0, days: null, daysAgo: null };
   }
 
   const endParsed = parseISODate(source.end);
@@ -263,7 +333,6 @@ function getEventState(event, nowDay) {
   return { kind: 'past', startDay, endDay, length, days: null, daysAgo: today - endDay };
 }
 
-/** Текст бейджа: «Через 3 дня», «Идёт · день 2 из 3», «Завершилось». */
 function formatCountdown(state) {
   if (!state) return '';
   switch (state.kind) {
@@ -288,102 +357,214 @@ function formatCountdown(state) {
   }
 }
 
+function editionEndDay(edition) {
+  const start = parseISODate(edition && edition.start);
+  if (!start) return 0;
+  const end = parseISODate(edition.end);
+  return end && end.stamp >= start.stamp ? end.stamp : start.stamp;
+}
+
+function compareEditionsDesc(a, b) {
+  const aStart = parseISODate(a.start);
+  const bStart = parseISODate(b.start);
+  return (bStart ? bStart.stamp : 0) - (aStart ? aStart.stamp : 0);
+}
+
+function sortedEditions(event) {
+  const list = event && Array.isArray(event.editions) ? event.editions.slice() : [];
+  return list.filter((edition) => parseISODate(edition.start)).sort(compareEditionsDesc);
+}
+
+/** Ближайшее текущее или будущее проведение. */
+function getNearestEdition(event, nowDay) {
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  let best = null;
+  let bestState = null;
+
+  sortedEditions(event).forEach((edition) => {
+    const state = editionState(edition, today);
+    if (state.kind !== 'upcoming' && state.kind !== 'ongoing') return;
+    if (!best || state.startDay < bestState.startDay) {
+      best = edition;
+      bestState = state;
+    }
+  });
+
+  return best;
+}
+
+/** Последнее завершившееся проведение. */
+function getLastPastEdition(event, nowDay) {
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  const past = sortedEditions(event).filter((edition) => editionState(edition, today).kind === 'past');
+  return past[0] || null;
+}
+
+function getPastEditions(event, nowDay) {
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  return sortedEditions(event).filter((edition) => editionState(edition, today).kind === 'past');
+}
+
+/**
+ * Общее состояние события: состояние ближайшего проведения, иначе
+ * «дата уточняется» (если задан ориентир), иначе состояние последнего
+ * прошедшего проведения.
+ */
+function getEventState(event, nowDay) {
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  const nearest = getNearestEdition(event, today);
+  if (nearest) return editionState(nearest, today);
+
+  const lastPast = getLastPastEdition(event, today);
+  const expected = parseMonth(event && event.expectedMonth);
+  // Ориентир из прошлого месяца уже неактуален — не показываем «Дата уточняется».
+  const hasExpectedMonth = expected && expected.year * 100 + expected.month >= monthKeyAt(today);
+
+  if (hasExpectedMonth) {
+    return { kind: 'tentative', startDay: null, endDay: null, length: 0, days: null, daysAgo: null };
+  }
+
+  if (lastPast) return editionState(lastPast, today);
+
+  return { kind: 'tentative', startDay: null, endDay: null, length: 0, days: null, daysAgo: null };
+}
+
+/**
+ * Элемент списка: что показывать в карточке и что считать «прошлым разом».
+ */
+function buildItem(event, mode, nowDay) {
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  const nearest = getNearestEdition(event, today);
+  const history = getPastEditions(event, today);
+  const lastPast = history[0] || null;
+  const state = getEventState(event, today);
+
+  let display = nearest;
+  let displayState = nearest ? editionState(nearest, today) : null;
+
+  if (mode === 'past') {
+    display = lastPast;
+    displayState = lastPast ? editionState(lastPast, today) : null;
+  } else if (!display && lastPast && state.kind === 'past') {
+    display = lastPast;
+    displayState = editionState(lastPast, today);
+  }
+
+  return {
+    event,
+    state,
+    nearest,
+    lastPast,
+    history,
+    display,
+    displayState,
+  };
+}
+
+function isItemVisible(item, mode, settings) {
+  const safeSettings = Object.assign({}, DEFAULT_SETTINGS, settings || {});
+
+  if (mode === 'past') {
+    return !!item.lastPast && safeSettings.showPast !== false;
+  }
+
+  if (mode === 'upcoming') {
+    if (item.state.kind === 'past') return false;
+    if (item.state.kind === 'tentative') return safeSettings.showTentative !== false;
+    return true;
+  }
+
+  if (item.state.kind === 'tentative') {
+    return safeSettings.showTentative !== false;
+  }
+  if (item.state.kind === 'past') {
+    return safeSettings.showPast !== false;
+  }
+  return true;
+}
+
 function stateRank(state) {
   if (state.kind === 'upcoming' || state.kind === 'ongoing') return 0;
   if (state.kind === 'tentative') return 1;
   return 2;
 }
 
-/**
- * Сортировка: сначала текущие и будущие по дате начала, затем события
- * с неуточнённой датой по ориентировочному месяцу, затем прошедшие —
- * от свежих к старым.
- */
-function sortEvents(events, nowDay) {
-  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
-  return (Array.isArray(events) ? events : [])
-    .map((event) => ({ event, state: getEventState(event, today) }))
-    .sort((a, b) => {
-      const rankDiff = stateRank(a.state) - stateRank(b.state);
-      if (rankDiff !== 0) return rankDiff;
+function sortItems(items, mode) {
+  const list = items.slice();
+  list.sort((a, b) => {
+    if (mode === 'past') {
+      const aEnd = a.displayState ? a.displayState.endDay : 0;
+      const bEnd = b.displayState ? b.displayState.endDay : 0;
+      return bEnd - aEnd;
+    }
 
-      if (stateRank(a.state) === 0) {
-        return (
-          a.state.startDay - b.state.startDay ||
-          String(a.event.title).localeCompare(String(b.event.title), 'ru')
-        );
-      }
+    const rankDiff = stateRank(a.state) - stateRank(b.state);
+    if (rankDiff !== 0) return rankDiff;
 
-      if (stateRank(a.state) === 1) {
-        const keyA = monthKey(a.event.expectedMonth) || 999999;
-        const keyB = monthKey(b.event.expectedMonth) || 999999;
-        return keyA - keyB || String(a.event.title).localeCompare(String(b.event.title), 'ru');
-      }
+    if (stateRank(a.state) === 0) {
+      return (
+        a.state.startDay - b.state.startDay ||
+        String(a.event.title).localeCompare(String(b.event.title), 'ru')
+      );
+    }
 
-      return b.state.endDay - a.state.endDay;
-    });
+    if (stateRank(a.state) === 1) {
+      const keyA = monthKey(a.event.expectedMonth) || 999999;
+      const keyB = monthKey(b.event.expectedMonth) || 999999;
+      return keyA - keyB || String(a.event.title).localeCompare(String(b.event.title), 'ru');
+    }
+
+    const aEnd = a.lastPast ? editionEndDay(a.lastPast) : 0;
+    const bEnd = b.lastPast ? editionEndDay(b.lastPast) : 0;
+    return bEnd - aEnd || String(a.event.title).localeCompare(String(b.event.title), 'ru');
+  });
+  return list;
 }
 
-function isVisibleInMode(state, mode, settings) {
-  if (state.kind === 'tentative') {
-    return settings.showTentative !== false && mode !== 'past';
-  }
-  if (state.kind === 'past') {
-    return settings.showPast !== false && mode !== 'upcoming';
-  }
-  return mode !== 'past';
+function buildItems(events, mode, settings, nowDay) {
+  const safeMode = VIEW_MODES.includes(mode) ? mode : 'upcoming';
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  const items = (Array.isArray(events) ? events : [])
+    .map((event) => buildItem(event, safeMode, today))
+    .filter((item) => isItemVisible(item, safeMode, settings));
+  return sortItems(items, safeMode);
 }
 
 function countForMode(events, mode, settings, nowDay) {
-  const safeSettings = Object.assign({}, DEFAULT_SETTINGS, settings || {});
-  const safeMode = VIEW_MODES.includes(mode) ? mode : 'upcoming';
-  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
-  return (Array.isArray(events) ? events : []).filter((event) =>
-    isVisibleInMode(getEventState(event, today), safeMode, safeSettings),
-  ).length;
+  return buildItems(events, mode, settings, nowDay).length;
 }
 
-/** Оставляет события, подходящие под выбранную вкладку и настройки. */
-function filterEvents(events, mode, settings, nowDay) {
-  const safeMode = VIEW_MODES.includes(mode) ? mode : 'upcoming';
-  const safeSettings = Object.assign({}, DEFAULT_SETTINGS, settings || {});
-  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
-
-  const sorted = sortEvents(events, today);
-  return sorted.filter(({ state }) => isVisibleInMode(state, safeMode, safeSettings));
-}
-
-/** Событие для блока «Ближайшее событие»: текущее или следующее по дате. */
+/** Ближайшее событие для крупного блока. */
 function pickHero(items) {
   if (!Array.isArray(items)) return null;
   for (const item of items) {
-    if (item.state.kind === 'ongoing' || item.state.kind === 'upcoming') return item;
+    if (item.displayState && (item.displayState.kind === 'ongoing' || item.displayState.kind === 'upcoming')) {
+      return item;
+    }
   }
   return null;
 }
 
-/**
- * Группирует элементы списка в секции: месяцы для будущих событий,
- * «Дата уточняется» и «Прошедшие».
- */
 function buildSections(items, mode) {
   const sections = [];
   const index = new Map();
 
   for (const item of items) {
-    const { event, state } = item;
     let key;
     let title;
 
-    if (state.kind === 'tentative') {
+    if (mode === 'past') {
+      key = '__past';
+      title = 'Прошедшие';
+    } else if (!item.display || !item.displayState) {
       key = '__tentative';
       title = 'Дата уточняется';
-    } else if (state.kind === 'past') {
+    } else if (item.displayState.kind === 'past') {
       key = '__past';
       title = 'Прошедшие';
     } else {
-      key = `month:${String(event.start).slice(0, 7)}`;
-      title = formatMonthTitle(String(event.start).slice(0, 7));
+      key = `month:${String(item.display.start).slice(0, 7)}`;
+      title = formatMonthTitle(String(item.display.start).slice(0, 7));
     }
 
     let section = index.get(key);
@@ -395,7 +576,10 @@ function buildSections(items, mode) {
     section.items.push(item);
   }
 
-  // В режиме «Предстоящие» заголовки месяцев выглядят лишними.
+  if (mode === 'past') {
+    return sections.map((section) => Object.assign({}, section, { title: '' }));
+  }
+
   if (mode === 'upcoming' && sections.length === 1 && !sections[0].key.startsWith('__')) {
     return [{ key: 'flat', title: '', items: sections[0].items }];
   }
@@ -409,6 +593,10 @@ function buildSections(items, mode) {
 
 function trimString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function cloneData(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
 function normalizeUrl(value) {
@@ -426,41 +614,113 @@ function generateId() {
   return `evt-${Date.now().toString(36)}-${random}-${idCounter}`;
 }
 
+function normalizeEdition(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const start = isValidISODate(source.start) ? source.start.trim() : '';
+  if (!start) return null;
+
+  const endRaw = isValidISODate(source.end) ? source.end.trim() : '';
+  const end = endRaw && parseISODate(endRaw).stamp >= parseISODate(start).stamp ? endRaw : '';
+
+  return {
+    id: trimString(source.id) || generateId(),
+    start,
+    end,
+    place: trimString(source.place),
+    url: normalizeUrl(source.url),
+    note: trimString(source.note),
+    source: source.source === 'auto' ? 'auto' : 'manual',
+    sourceUrl: normalizeUrl(source.sourceUrl),
+    checkedAt: trimString(source.checkedAt),
+  };
+}
+
+function normalizeSync(raw, eventUrl) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const url = normalizeUrl(eventUrl);
+
+  let sources = [];
+  if (Array.isArray(source.sources)) {
+    sources = source.sources.map(normalizeUrl).filter(Boolean);
+  } else if (url) {
+    sources = [url];
+  }
+
+  return {
+    enabled: source.enabled !== false && sources.length > 0,
+    sources: Array.from(new Set(sources)).slice(0, 5),
+    lastSync: trimString(source.lastSync),
+    lastResult: trimString(source.lastResult),
+    lastError: trimString(source.lastError),
+  };
+}
+
+function dedupeEditions(editions) {
+  const seen = new Set();
+  const result = [];
+  editions
+    .slice()
+    .sort(compareEditionsDesc)
+    .forEach((edition) => {
+      const key = `${edition.start}|${edition.end}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      result.push(edition);
+    });
+  return result.slice(0, MAX_EDITIONS);
+}
+
 function normalizeEvent(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
 
-  const start = isValidISODate(source.start) ? source.start.trim() : '';
-  let end = isValidISODate(source.end) ? source.end.trim() : '';
-  if (!start || !end || parseISODate(end).stamp < parseISODate(start).stamp) {
-    end = '';
+  let editions = Array.isArray(source.editions)
+    ? source.editions.map(normalizeEdition).filter(Boolean)
+    : [];
+
+  // Миграция данных версии 1: start/end/place + произвольная строка previous.
+  if (editions.length === 0 && isValidISODate(source.start)) {
+    const legacy = normalizeEdition({
+      start: source.start,
+      end: source.end,
+      place: source.place,
+      url: source.url,
+      source: 'manual',
+    });
+    if (legacy) editions = [legacy];
   }
 
+  editions = dedupeEditions(editions);
+
   const expectedMonth = parseMonth(source.expectedMonth) ? source.expectedMonth.trim() : '';
+  const url = normalizeUrl(source.url);
 
   return {
     id: trimString(source.id) || generateId(),
     title: trimString(source.title),
     fullTitle: trimString(source.fullTitle),
     category: trimString(source.category) || 'Другое',
-    start,
-    end,
-    expectedMonth,
-    place: trimString(source.place),
-    url: normalizeUrl(source.url),
+    url,
     note: trimString(source.note),
-    previous: trimString(source.previous),
-    tentative: !start,
+    expectedMonth,
+    editions,
+    historyNote: trimString(source.previous) || trimString(source.historyNote),
+    sync: normalizeSync(source.sync, url),
     createdAt: trimString(source.createdAt) || new Date().toISOString(),
   };
 }
 
 function normalizeSettings(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
+  const interval = Number(source.syncIntervalHours);
   return {
     showPast: source.showPast !== false,
     showTentative: source.showTentative !== false,
     showHero: source.showHero !== false,
     openOnStartup: source.openOnStartup === true,
+    autoSync: source.autoSync !== false,
+    syncIntervalHours: [1, 6, 12, 24, 72].includes(interval) ? interval : 12,
+    lastSyncAt: trimString(source.lastSyncAt),
+    lastSyncSummary: trimString(source.lastSyncSummary),
   };
 }
 
@@ -483,6 +743,646 @@ function normalizeData(raw) {
     events,
     settings: normalizeSettings(source.settings),
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Разбор страниц официальных сайтов                                   */
+/* ------------------------------------------------------------------ */
+
+function decodeHtmlEntities(value) {
+  return String(value)
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;|&#0*39;/gi, "'")
+    .replace(/&laquo;/gi, '«')
+    .replace(/&raquo;/gi, '»')
+    .replace(/&mdash;/gi, '—')
+    .replace(/&ndash;/gi, '–')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+function cleanText(value) {
+  return decodeHtmlEntities(String(value))
+    .replace(/\s+/g, ' ')
+    .replace(/\s*[·|]\s*$/, '')
+    .trim();
+}
+
+function stripHtml(html) {
+  return decodeHtmlEntities(
+    String(html || '')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|h[1-6]|tr|section|article)>/gi, '\n')
+      .replace(/<[^>]+>/g, ' '),
+  )
+    .replace(/[ \t\u00a0]+/g, ' ')
+    .replace(/\s*\n\s*/g, '\n')
+    .trim();
+}
+
+function extractTitle(html) {
+  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(String(html || ''));
+  return match ? cleanText(match[1]) : '';
+}
+
+function isoFromDateValue(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(trimmed);
+  if (match) {
+    const iso = `${match[1]}-${match[2]}-${match[3]}`;
+    return isValidISODate(iso) ? iso : '';
+  }
+
+  const stamp = Date.parse(trimmed);
+  if (!Number.isFinite(stamp)) return '';
+  const date = new Date(stamp);
+  return makeISO(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+}
+
+function composeJsonLdPlace(location) {
+  if (!location) return '';
+  if (typeof location === 'string') return cleanText(location);
+  if (Array.isArray(location)) {
+    for (const item of location) {
+      const composed = composeJsonLdPlace(item);
+      if (composed) return composed;
+    }
+    return '';
+  }
+
+  const parts = [];
+  const regionName = typeof location.name === 'string' ? cleanText(location.name) : '';
+  const address = location.address;
+
+  if (address && typeof address === 'object') {
+    if (typeof address.addressRegion === 'string' && address.addressRegion.trim()) {
+      parts.push(cleanText(address.addressRegion));
+    }
+    if (regionName) parts.push(regionName);
+    if (typeof address.addressLocality === 'string' && address.addressLocality.trim()) {
+      parts.push(cleanText(address.addressLocality));
+    } else if (typeof address.streetAddress === 'string' && address.streetAddress.trim()) {
+      parts.push(cleanText(address.streetAddress));
+    }
+  } else if (typeof address === 'string' && address.trim()) {
+    if (regionName) parts.push(regionName);
+    parts.push(cleanText(address));
+  } else if (regionName) {
+    parts.push(regionName);
+  }
+
+  const unique = [];
+  parts.forEach((part) => {
+    if (part && !unique.some((existing) => existing.toLowerCase() === part.toLowerCase())) {
+      unique.push(part);
+    }
+  });
+  return unique.join(' · ').slice(0, 190);
+}
+
+function isEventNode(node) {
+  if (!node || typeof node !== 'object') return false;
+  const type = node['@type'];
+  const list = Array.isArray(type) ? type : [type];
+  return list.some(
+    (value) => typeof value === 'string' && /event$/i.test(value.trim()) && !/series$/i.test(value.trim()),
+  );
+}
+
+function parseJsonLdEvents(html) {
+  const events = [];
+  const scriptRe = /<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+
+  while ((match = scriptRe.exec(String(html || '')))) {
+    const raw = match[1]
+      .replace(/^\s*<!--/, '')
+      .replace(/-->\s*$/, '')
+      .replace(/^\uFEFF/, '')
+      .trim();
+    if (!raw) continue;
+
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (error) {
+      continue;
+    }
+
+    const queue = [data];
+    const seen = new Set();
+    let guard = 0;
+
+    while (queue.length > 0 && guard < 200) {
+      guard += 1;
+      const node = queue.shift();
+      if (!node || typeof node !== 'object') continue;
+      if (seen.has(node)) continue;
+      seen.add(node);
+
+      if (Array.isArray(node)) {
+        node.forEach((item) => queue.push(item));
+        continue;
+      }
+
+      if (isEventNode(node)) {
+        const start = isoFromDateValue(node.startDate);
+        if (start) {
+          events.push({
+            name: cleanText(node.name || ''),
+            start,
+            end: isoFromDateValue(node.endDate),
+            place: composeJsonLdPlace(node.location),
+            url: typeof node.url === 'string' ? normalizeUrl(node.url) : '',
+            method: 'json-ld',
+            confidence: 0.96,
+          });
+        }
+      }
+
+      Object.keys(node).forEach((key) => {
+        if (key === 'location' || key === 'address') return;
+        const value = node[key];
+        if (value && typeof value === 'object') queue.push(value);
+      });
+    }
+  }
+
+  return events;
+}
+
+function monthNumber(name) {
+  return MONTHS_GENITIVE.indexOf(String(name).toLowerCase()) + 1;
+}
+
+/**
+ * Ищет в тексте диапазоны дат в русском формате.
+ * Возвращает [{ start, end, index, explicitYear }].
+ */
+function findDateRanges(text, referenceYear, nowDay) {
+  const months = MONTHS_GENITIVE.join('|');
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  const results = [];
+  const consumed = [];
+
+  function overlaps(start, end) {
+    return consumed.some((range) => start < range.end && end > range.start);
+  }
+
+  function push(start, end, index, length, explicitYear) {
+    if (!start) return;
+    if (overlaps(index, index + length)) return;
+    consumed.push({ start: index, end: index + length });
+    results.push({ start, end: end || start, index, explicitYear: !!explicitYear });
+  }
+
+  function inferYear(month, day) {
+    const initial = makeISO(referenceYear, month, day);
+    if (!initial) return { iso: '', year: referenceYear };
+    if (parseISODate(initial).stamp < today - 45) {
+      return { iso: makeISO(referenceYear + 1, month, day), year: referenceYear + 1 };
+    }
+    return { iso: initial, year: referenceYear };
+  }
+
+  // «28 февраля — 2 марта 2027»
+  const crossMonthRe = new RegExp(
+    `(\\d{1,2})\\s+(${months})\\s*[–—−-]\\s*(\\d{1,2})\\s+(${months})\\s+(\\d{4})`,
+    'gi',
+  );
+  let match;
+  while ((match = crossMonthRe.exec(text))) {
+    const monthFrom = monthNumber(match[2]);
+    const monthTo = monthNumber(match[4]);
+    const yearTo = Number(match[5]);
+    const yearFrom = monthTo < monthFrom ? yearTo - 1 : yearTo;
+    push(
+      makeISO(yearFrom, monthFrom, Number(match[1])),
+      makeISO(yearTo, monthTo, Number(match[3])),
+      match.index,
+      match[0].length,
+      true,
+    );
+  }
+
+  // «с 3 по 5 июля 2025», «с 27 августа по 30 августа 2025»
+  const fromToRe = new RegExp(
+    `(?<![а-яёa-z])с\\s+(\\d{1,2})(?:\\s+(${months}))?(?:\\s+(\\d{4}))?\\s+по\\s+(\\d{1,2})\\s+(${months})(?:\\s+(\\d{4}))?`,
+    'gi',
+  );
+  while ((match = fromToRe.exec(text))) {
+    const monthTo = monthNumber(match[5]);
+    const monthFrom = match[2] ? monthNumber(match[2]) : monthTo;
+    const yearToRaw = match[6] ? Number(match[6]) : null;
+    const yearFromRaw = match[3] ? Number(match[3]) : null;
+    let yearFrom;
+    let yearTo;
+
+    if (yearFromRaw || yearToRaw) {
+      yearFrom = yearFromRaw || yearToRaw;
+      yearTo = yearToRaw || yearFromRaw;
+      if (monthTo < monthFrom) {
+        if (!yearFromRaw) yearFrom = yearTo - 1;
+        else yearTo = yearFrom + 1;
+      }
+    } else {
+      const inferred = inferYear(monthFrom, Number(match[1]));
+      yearFrom = inferred.year;
+      yearTo = monthTo < monthFrom ? yearFrom + 1 : yearFrom;
+    }
+
+    push(
+      makeISO(yearFrom, monthFrom, Number(match[1])),
+      makeISO(yearTo, monthTo, Number(match[4])),
+      match.index,
+      match[0].length,
+      !!(match[3] || match[6]),
+    );
+  }
+
+  // «16–18 июля 2026»
+  const sameMonthRe = new RegExp(
+    `(\\d{1,2})\\s*[–—−-]\\s*(\\d{1,2})\\s+(${months})\\s+(\\d{4})`,
+    'gi',
+  );
+  while ((match = sameMonthRe.exec(text))) {
+    const month = monthNumber(match[3]);
+    const year = Number(match[4]);
+    push(
+      makeISO(year, month, Number(match[1])),
+      makeISO(year, month, Number(match[2])),
+      match.index,
+      match[0].length,
+      true,
+    );
+  }
+
+  // «16–18 июля» без года — год выводим из контекста страницы.
+  const sameMonthNoYearRe = new RegExp(
+    `(\\d{1,2})\\s*[–—−-]\\s*(\\d{1,2})\\s+(${months})(?!\\s*\\d{4})`,
+    'gi',
+  );
+  while ((match = sameMonthNoYearRe.exec(text))) {
+    const month = monthNumber(match[3]);
+    const inferred = inferYear(month, Number(match[1]));
+    if (!inferred.iso) continue;
+    push(
+      inferred.iso,
+      makeISO(inferred.year, month, Number(match[2])),
+      match.index,
+      match[0].length,
+      false,
+    );
+  }
+
+  // «16 июля 2026»
+  const singleDayRe = new RegExp(`(\\d{1,2})\\s+(${months})\\s+(\\d{4})`, 'gi');
+  while ((match = singleDayRe.exec(text))) {
+    const month = monthNumber(match[2]);
+    const year = Number(match[3]);
+    const iso = makeISO(year, month, Number(match[1]));
+    push(iso, iso, match.index, match[0].length, true);
+  }
+
+  return results.sort((a, b) => a.index - b.index);
+}
+
+function normalizeForMatch(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[«»"'’]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function matchesTitle(text, title) {
+  const haystack = normalizeForMatch(text);
+  const needle = normalizeForMatch(title);
+  if (!haystack || !needle) return false;
+  if (haystack.includes(needle)) return true;
+
+  const words = needle
+    .split(/[^a-zа-я0-9]+/i)
+    .filter((word) => word.length >= 4 && !STOP_WORDS.has(word));
+
+  return words.some((word) => haystack.includes(word));
+}
+
+function normalizeRegionLabel(value) {
+  return cleanText(value)
+    .replace(/([А-ЯЁ][а-яё-]+)ой\s+области$/i, (_, stem) => `${stem}ая область`)
+    .replace(/([А-ЯЁ][а-яё-]+)ом\s+крае$/i, (_, stem) => `${stem}ий край`)
+    .replace(/([А-ЯЁ][а-яё-]+)ем\s+крае$/i, (_, stem) => `${stem}ий край`)
+    .replace(/([А-ЯЁ][а-яё-]+)ой\s+области$/i, (_, stem) => `${stem}ая область`);
+}
+
+function cleanVenueLabel(value) {
+  let venue = cleanText(value);
+  const closeQuote = venue.indexOf('»');
+  if (closeQuote >= 0) venue = venue.slice(0, closeQuote + 1);
+
+  venue = venue.replace(
+    /\s+(?:пройдёт|пройдет|пройдут|состоится|состоятся|будет|проходит|пройдет)\b[\s\S]*$/i,
+    '',
+  );
+  venue = venue.replace(/[\s,;:-]+$/, '');
+
+  if (!venue.includes('«') && venue.endsWith('»')) {
+    venue = venue.slice(0, -1).trim();
+  }
+  return venue;
+}
+
+function extractPlaceNear(text, index) {
+  const around = text.slice(Math.max(0, index - 350), Math.min(text.length, index + 450));
+  const parts = [];
+
+  const region =
+    /([А-ЯЁ][а-яё-]+\s+(?:край|крае|края|область|области)|Республика\s+[А-ЯЁ][а-яё-]+)/.exec(
+      around,
+    );
+  if (region) parts.push(normalizeRegionLabel(region[1]));
+
+  const venue =
+    /((?:МВК|МВЦ|КВЦ|Экспоцентр|ЭКСПО|конгресс-?центр|выставочный (?:центр|комплекс)|Сибирский агропарк|агропарк|учхоз|КФХ)\s*[^.;:\n]{0,70})/i.exec(
+      around,
+    );
+
+  if (venue) {
+    const cleaned = cleanVenueLabel(venue[1]);
+    if (cleaned) parts.push(cleaned);
+  } else {
+    const city = /(?:г\.\s*|город\s+)([А-ЯЁ][а-яё-]+(?:-[А-ЯЁ][а-яё-]+)?)/.exec(around);
+    if (city) parts.push(cleanText(city[1]));
+  }
+
+  const unique = [];
+  parts.forEach((part) => {
+    if (part && !unique.some((existing) => existing.toLowerCase() === part.toLowerCase())) {
+      unique.push(part);
+    }
+  });
+
+  return unique.join(' · ').slice(0, 190);
+}
+
+function extractReferenceYear(html, text, nowDay) {
+  const head = `${extractTitle(html)} ${text.slice(0, 1500)}`;
+  const match = /\b(20\d{2})\b/.exec(head);
+  if (match) return Number(match[1]);
+  return new Date(nowDay * 86400000).getUTCFullYear();
+}
+
+/**
+ * Разбирает страницу мероприятия и возвращает кандидатов на дату/место.
+ */
+function parseEventPage(html, options) {
+  const opts = options || {};
+  const title = opts.title || '';
+  const nowDay = Number.isFinite(opts.nowDay) ? opts.nowDay : todayDayNumber();
+  const sourceUrl = normalizeUrl(opts.sourceUrl || '');
+  const text = stripHtml(html);
+  const referenceYear = extractReferenceYear(html, text, nowDay);
+  const candidates = [];
+
+  parseJsonLdEvents(html).forEach((item) => {
+    candidates.push(Object.assign({}, item, { sourceUrl }));
+  });
+
+  findDateRanges(text, referenceYear, nowDay).forEach((range) => {
+    const windowStart = Math.max(0, range.index - 320);
+    const windowEnd = Math.min(text.length, range.index + 420);
+    const around = text.slice(windowStart, windowEnd);
+    const place = extractPlaceNear(text, range.index);
+    const state = editionState({ start: range.start, end: range.end }, nowDay);
+
+    let confidence = range.explicitYear ? 0.55 : 0.45;
+    if (matchesTitle(around, title)) confidence += 0.15;
+    if (place) confidence += 0.2;
+    if (state.kind === 'upcoming' || state.kind === 'ongoing') confidence += 0.1;
+    confidence = Math.min(confidence, 0.85);
+
+    if (confidence >= 0.6) {
+      candidates.push({
+        start: range.start,
+        end: range.end,
+        place,
+        name: '',
+        method: 'text',
+        confidence,
+        sourceUrl,
+      });
+    }
+  });
+
+  candidates.sort((a, b) => b.confidence - a.confidence);
+  return { candidates, pageTitle: extractTitle(html), referenceYear, textLength: text.length };
+}
+
+/**
+ * Выбирает кандидата на предстоящее проведение: только будущее/текущее,
+ * не дальше двух лет, с максимальной уверенностью.
+ */
+function pickSyncCandidate(candidates, nowDay) {
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  const acceptable = [];
+
+  (Array.isArray(candidates) ? candidates : []).forEach((candidate) => {
+    if (!candidate || !isValidISODate(candidate.start)) return;
+    const state = editionState({ start: candidate.start, end: candidate.end }, today);
+    if (state.kind !== 'upcoming' && state.kind !== 'ongoing') return;
+    if (Number.isFinite(state.days) && state.days > 730) return;
+    acceptable.push(Object.assign({}, candidate, { state }));
+  });
+
+  acceptable.sort(
+    (a, b) =>
+      b.confidence - a.confidence ||
+      a.state.startDay - b.state.startDay ||
+      String(a.place).length - String(b.place).length,
+  );
+
+  const seen = new Set();
+  for (const candidate of acceptable) {
+    const key = `${candidate.start}|${candidate.end}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    return candidate;
+  }
+
+  return null;
+}
+
+/**
+ * Применяет найденного кандидата к событию.
+ * Ручное предстоящее проведение не перезаписывается — фиксируется конфликт.
+ */
+function applySyncCandidate(event, candidate, nowISO, nowDay) {
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  const result = { event: cloneData(event), action: 'none', conflict: '' };
+  const target = result.event;
+  if (!Array.isArray(target.editions)) target.editions = [];
+
+  if (!candidate || !isValidISODate(candidate.start)) return result;
+
+  const targetState = editionState({ start: candidate.start, end: candidate.end }, today);
+  if (targetState.kind === 'past') return result;
+
+  const same = target.editions.find((edition) => edition.start === candidate.start);
+  if (same) {
+    let changed = false;
+    if (candidate.end && !same.end) {
+      same.end = candidate.end;
+      changed = true;
+    }
+    if (candidate.place && !same.place) {
+      same.place = candidate.place;
+      changed = true;
+    }
+    if (candidate.sourceUrl && !same.sourceUrl) {
+      same.sourceUrl = candidate.sourceUrl;
+      changed = true;
+    }
+    same.checkedAt = nowISO;
+    if (changed && same.source !== 'manual') same.source = 'auto';
+    result.action = changed ? 'updated' : 'confirmed';
+    return result;
+  }
+
+  const upcoming = target.editions.filter((edition) => {
+    const state = editionState(edition, today);
+    return state.kind === 'upcoming' || state.kind === 'ongoing';
+  });
+  const manualUpcoming = upcoming.find((edition) => edition.source !== 'auto');
+
+  if (manualUpcoming) {
+    result.action = 'conflict';
+    result.conflict =
+      `На сайте: ${formatRangeRu(candidate.start, candidate.end)}` +
+      (candidate.place ? ` · ${candidate.place}` : '');
+    return result;
+  }
+
+  target.editions = target.editions.filter((edition) => {
+    const state = editionState(edition, today);
+    return !(edition.source === 'auto' && (state.kind === 'upcoming' || state.kind === 'ongoing'));
+  });
+
+  const edition = normalizeEdition({
+    start: candidate.start,
+    end: candidate.end,
+    place: candidate.place,
+    source: 'auto',
+    sourceUrl: candidate.sourceUrl,
+    checkedAt: nowISO,
+  });
+
+  if (edition) target.editions.push(edition);
+  target.editions = dedupeEditions(target.editions);
+  target.expectedMonth = candidate.start.slice(0, 7);
+  result.action = 'added';
+  return result;
+}
+
+function syncErrorMessage(error) {
+  const message = error && error.message ? error.message : String(error || 'ошибка');
+  return message.length > 120 ? `${message.slice(0, 117)}…` : message;
+}
+
+/**
+ * Обновляет одно событие по списку источников.
+ * fetcher(url) → Promise<string|{text}> — внедряется для тестов.
+ */
+async function syncEventWithFetcher(event, fetcher, options) {
+  const opts = options || {};
+  const nowDay = Number.isFinite(opts.nowDay) ? opts.nowDay : todayDayNumber();
+  const nowISO = opts.nowISO || new Date().toISOString();
+  const working = cloneData(event);
+  const sources = working.sync && Array.isArray(working.sync.sources) ? working.sync.sources.slice(0, 3) : [];
+  const candidates = [];
+  const errors = [];
+
+  for (const sourceUrl of sources) {
+    try {
+      const response = await fetcher(sourceUrl);
+      const html = typeof response === 'string' ? response : (response && response.text) || '';
+      if (!html) throw new Error('пустой ответ');
+      const parsed = parseEventPage(html, {
+        title: working.title,
+        nowDay,
+        sourceUrl,
+      });
+      candidates.push(...parsed.candidates);
+    } catch (error) {
+      errors.push(`${sourceUrl}: ${syncErrorMessage(error)}`);
+    }
+  }
+
+  const best = pickSyncCandidate(candidates, nowDay);
+  const result = {
+    event: working,
+    action: 'none',
+    candidate: best,
+    errors,
+    message: '',
+  };
+
+  working.sync = Object.assign({}, working.sync, {
+    lastSync: nowISO,
+    lastError: errors.join('; '),
+  });
+
+  if (!best) {
+    working.sync.lastResult = '';
+    result.message = errors.length > 0 ? 'Не удалось получить данные' : 'Даты не найдены';
+    return result;
+  }
+
+  const applied = applySyncCandidate(working, best, nowISO, nowDay);
+  const updated = applied.event;
+  updated.sync = Object.assign({}, working.sync, {
+    lastSync: nowISO,
+    lastError: applied.conflict ? '' : errors.join('; '),
+    lastResult:
+      applied.conflict ||
+      `${formatRangeRu(best.start, best.end)}${best.place ? ` · ${best.place}` : ''}`,
+  });
+
+  result.event = updated;
+  result.action = applied.action;
+  result.message = applied.conflict || describeSyncAction(applied.action, best);
+  return result;
+}
+
+function describeSyncAction(action, candidate) {
+  const range = formatRangeRu(candidate.start, candidate.end);
+  const place = candidate.place ? ` · ${candidate.place}` : '';
+  if (action === 'added') return `Найдено: ${range}${place}`;
+  if (action === 'updated') return `Уточнено: ${range}${place}`;
+  if (action === 'confirmed') return `Без изменений: ${range}${place}`;
+  return 'Без изменений';
+}
+
+function summarizeSyncResults(results) {
+  const list = Array.isArray(results) ? results : [];
+  const added = list.filter((item) => item.action === 'added').length;
+  const updated = list.filter((item) => item.action === 'updated').length;
+  const conflicts = list.filter((item) => item.action === 'conflict').length;
+  const failed = list.filter((item) => item.errors && item.errors.length > 0 && item.action === 'none').length;
+  const parts = [];
+  if (added) parts.push(`новых дат: ${added}`);
+  if (updated) parts.push(`уточнено: ${updated}`);
+  if (conflicts) parts.push(`расхождений с сайтом: ${conflicts}`);
+  if (failed) parts.push(`не удалось проверить: ${failed}`);
+  return parts.length > 0 ? `Обновление завершено — ${parts.join(', ')}` : 'Обновление завершено — изменений нет';
 }
 
 /* ------------------------------------------------------------------ */
@@ -513,11 +1413,7 @@ function parseCodeBlockOptions(source) {
           break;
         case 'limit': {
           const limit = parseInt(value, 10);
-          if (Number.isFinite(limit) && limit > 0) {
-            options.limit = limit;
-          } else if (limit === 0) {
-            options.limit = 0;
-          }
+          if (Number.isFinite(limit) && limit >= 0) options.limit = limit;
           break;
         }
         case 'hero':
@@ -563,7 +1459,7 @@ function addIconButton(parent, iconName, label, onClick) {
   try {
     setIcon(button, iconName);
   } catch (error) {
-    /* старые версии Obsidian могут не поддерживать иконку */
+    /* старые версии Obsidian могут не знать иконку */
   }
   if (!button.firstChild) button.textContent = '•';
   button.addEventListener('click', (event) => {
@@ -575,8 +1471,8 @@ function addIconButton(parent, iconName, label, onClick) {
   return button;
 }
 
-function createMetaRow(iconName, text) {
-  const row = createElSafe('div', 'ct-meta');
+function createMetaRow(iconName, text, className) {
+  const row = createElSafe('div', `ct-meta${className ? ` ${className}` : ''}`);
   const icon = createElSafe('span', 'ct-meta-icon');
   try {
     setIcon(icon, iconName);
@@ -594,33 +1490,28 @@ function createMetaRow(iconName, text) {
 
 function heroLabel(state) {
   if (state.kind === 'ongoing') return 'Сейчас идёт';
-  if (state.kind === 'upcoming') return 'Ближайшее событие';
-  if (state.kind === 'past') return 'Недавно завершилось';
-  return 'Ожидается';
+  return 'Ближайшее событие';
 }
 
 function renderHero(parent, item) {
-  const { event, state } = item;
+  const edition = item.display;
+  const state = item.displayState;
+  const event = item.event;
+  if (!edition || !state) return;
+
   const hero = createElSafe('div', 'ct-hero');
   hero.dataset.state = state.kind;
   hero.dataset.category = event.category || 'Другое';
 
   hero.appendChild(createElSafe('div', 'ct-hero-label', heroLabel(state)));
+  hero.appendChild(createElSafe('div', 'ct-hero-title', event.title));
 
-  const titleRow = createElSafe('div', 'ct-hero-title-row');
-  titleRow.appendChild(createElSafe('div', 'ct-hero-title', event.title));
-  hero.appendChild(titleRow);
-
+  const count = createElSafe('div', 'ct-hero-count');
   if (state.kind === 'upcoming') {
-    const count = createElSafe('div', 'ct-hero-count');
     count.appendChild(createElSafe('span', 'ct-hero-num', String(state.days)));
-    count.appendChild(
-      createElSafe('span', 'ct-hero-unit', pluralRu(state.days, ['день', 'дня', 'дней'])),
-    );
+    count.appendChild(createElSafe('span', 'ct-hero-unit', pluralRu(state.days, ['день', 'дня', 'дней'])));
     count.appendChild(createElSafe('span', 'ct-hero-unit-note', 'до начала'));
-    hero.appendChild(count);
   } else if (state.kind === 'ongoing') {
-    const count = createElSafe('div', 'ct-hero-count');
     if (state.length === 1) {
       count.appendChild(createElSafe('span', 'ct-hero-text', 'Сегодня'));
     } else {
@@ -635,29 +1526,52 @@ function renderHero(parent, item) {
         createElSafe('span', 'ct-hero-unit-note', state.lastDay ? 'последний день' : 'день события'),
       );
     }
-    hero.appendChild(count);
   }
+  hero.appendChild(count);
 
+  hero.appendChild(createElSafe('div', 'ct-hero-date', formatRangeRu(edition.start, edition.end)));
   hero.appendChild(
-    createElSafe('div', 'ct-hero-date', formatRangeRu(event.start, event.end)),
+    createElSafe('div', 'ct-hero-place', edition.place || 'Место уточняется'),
   );
-  if (event.place) {
-    hero.appendChild(createElSafe('div', 'ct-hero-place', event.place));
-  }
 
   parent.appendChild(hero);
 }
 
 function renderBadge(state) {
-  const badge = createElSafe('span', 'ct-badge', formatCountdown(state));
-  badge.dataset.state = state.kind;
+  const badge = createElSafe('span', 'ct-badge', state ? formatCountdown(state) : 'Дата уточняется');
+  badge.dataset.state = state ? state.kind : 'tentative';
   return badge;
 }
 
+function renderHistoryDetails(parent, item, compact) {
+  const history = item.history || [];
+  if (compact || history.length === 0) return;
+
+  const details = createElSafe('details', 'ct-history');
+  const summary = createElSafe('summary', 'ct-history-summary');
+  summary.textContent = `История проведений · ${history.length}`;
+  details.appendChild(summary);
+
+  const list = createElSafe('div', 'ct-history-list');
+  history.forEach((edition) => {
+    const row = createElSafe('div', 'ct-history-item');
+    const date = createElSafe('span', 'ct-history-date', formatRangeRu(edition.start, edition.end));
+    row.appendChild(date);
+    if (edition.place) {
+      row.appendChild(createElSafe('span', 'ct-history-place', edition.place));
+    }
+    list.appendChild(row);
+  });
+  details.appendChild(list);
+  parent.appendChild(details);
+}
+
 function renderCard(parent, item, context) {
-  const { event, state } = item;
+  const event = item.event;
+  const edition = item.display;
+  const state = item.displayState;
   const card = createElSafe('div', 'ct-card');
-  card.dataset.state = state.kind;
+  card.dataset.state = state ? state.kind : 'tentative';
   card.dataset.category = event.category || 'Другое';
 
   const body = createElSafe('div', 'ct-card-body');
@@ -676,24 +1590,47 @@ function renderCard(parent, item, context) {
   top.appendChild(titles);
   top.appendChild(renderBadge(state));
 
-  const dateText =
-    state.kind === 'tentative'
-      ? event.expectedMonth
-        ? `Ориентир: ${formatMonthRu(event.expectedMonth)}`
-        : 'Без даты'
-      : formatRangeRu(event.start, event.end);
+  const dateText = edition
+    ? formatRangeRu(edition.start, edition.end)
+    : event.expectedMonth
+      ? `Ориентир: ${formatMonthRu(event.expectedMonth)}`
+      : 'Дата не указана';
   body.appendChild(createMetaRow('calendar-days', dateText));
 
-  if (event.place) {
-    body.appendChild(createMetaRow('map-pin', event.place));
+  const placeText = edition && edition.place ? edition.place : 'Место уточняется';
+  body.appendChild(createMetaRow('map-pin', placeText, edition && edition.place ? '' : 'ct-meta--muted'));
+
+  if (item.lastPast && item.lastPast !== edition) {
+    const past = item.lastPast;
+    const pastText =
+      `${formatRangeRu(past.start, past.end)}` + (past.place ? ` · ${past.place}` : '');
+    const row = createMetaRow('history', `Прошлый раз: ${pastText}`, 'ct-meta--past');
+    body.appendChild(row);
+  } else if (!edition && event.historyNote) {
+    body.appendChild(createMetaRow('history', `Прошлый раз: ${event.historyNote}`, 'ct-meta--past'));
+  }
+
+  if (event.sync && event.sync.lastResult && event.sync.lastResult.startsWith('На сайте:')) {
+    body.appendChild(
+      createElSafe('div', 'ct-sync-conflict', event.sync.lastResult),
+    );
   }
 
   if (event.note && !context.compact) {
     body.appendChild(createElSafe('div', 'ct-card-note', event.note));
   }
 
+  renderHistoryDetails(body, item, context.compact);
+
   const footer = createElSafe('div', 'ct-card-foot');
   footer.appendChild(createElSafe('span', 'ct-chip', event.category || 'Другое'));
+
+  if (edition && edition.source === 'auto') {
+    const autoChip = createElSafe('span', 'ct-chip ct-chip--auto', 'авто');
+    const checked = edition.checkedAt ? ` ${formatDateTimeRu(edition.checkedAt)}` : '';
+    autoChip.title = `Дата и место получены с сайта${checked}`;
+    footer.appendChild(autoChip);
+  }
 
   if (event.url) {
     const link = createElSafe('a', 'ct-link', 'Сайт ↗');
@@ -703,13 +1640,26 @@ function renderCard(parent, item, context) {
     footer.appendChild(link);
   }
 
-  if (event.previous && !context.compact) {
-    footer.appendChild(createElSafe('span', 'ct-previous', `Прошлый раз: ${event.previous}`));
+  if (!context.compact && event.sync && event.sync.lastSync) {
+    const status = createElSafe('span', 'ct-previous');
+    if (event.sync.lastError && !event.sync.lastResult) {
+      status.textContent = 'Авто: ошибка';
+      status.classList.add('ct-sync-error');
+      status.title = event.sync.lastError;
+    } else {
+      status.textContent = `Проверено ${formatDateTimeRu(event.sync.lastSync).slice(0, 10)}`;
+      if (event.sync.lastResult) status.title = event.sync.lastResult;
+    }
+    footer.appendChild(status);
   }
+
   body.appendChild(footer);
 
   if (context.canEdit) {
     const actions = createElSafe('div', 'ct-card-actions');
+    if (typeof context.onSync === 'function' && event.sync && event.sync.enabled && event.sync.sources.length > 0) {
+      addIconButton(actions, 'refresh-cw', 'Проверить даты на сайте', () => context.onSync(event));
+    }
     addIconButton(actions, 'pencil', 'Изменить событие', () => context.onEdit(event));
     addIconButton(actions, 'trash-2', 'Удалить событие', () => context.onDelete(event));
     card.appendChild(actions);
@@ -737,10 +1687,6 @@ function renderTabs(parent, activeMode, events, settings, nowDay, onChange) {
   parent.appendChild(tabs);
 }
 
-/**
- * Рисует виджет в произвольный контейнер. Используется и боковой панелью,
- * и блоком ```conferences``` внутри заметки.
- */
 function renderWidget(container, plugin, options) {
   const settings = Object.assign({}, DEFAULT_SETTINGS, plugin.getSettings());
   const opts = Object.assign(
@@ -782,19 +1728,21 @@ function renderWidget(container, plugin, options) {
       const header = createElSafe('div', 'ct-header');
       const textBlock = createElSafe('div', 'ct-header-text');
       textBlock.appendChild(createElSafe('div', 'ct-title', 'Конференции'));
+
       const subtitleParts = [
         `${events.length} ${pluralRu(events.length, ['событие', 'события', 'событий'])}`,
       ];
-      const heroItem = pickHero(sortEvents(events, nowDay));
-      if (heroItem && heroItem.state.kind === 'upcoming') {
+      const allItems = buildItems(events, 'upcoming', settings, nowDay);
+      const heroItem = pickHero(allItems);
+      if (heroItem && heroItem.displayState.kind === 'upcoming') {
         subtitleParts.push(
-          `ближайшее через ${heroItem.state.days} ${pluralRu(heroItem.state.days, [
+          `ближайшее через ${heroItem.displayState.days} ${pluralRu(heroItem.displayState.days, [
             'день',
             'дня',
             'дней',
           ])}`,
         );
-      } else if (heroItem && heroItem.state.kind === 'ongoing') {
+      } else if (heroItem && heroItem.displayState.kind === 'ongoing') {
         subtitleParts.push('одно идёт сейчас');
       }
       textBlock.appendChild(createElSafe('div', 'ct-subtitle', subtitleParts.join(' · ')));
@@ -802,7 +1750,9 @@ function renderWidget(container, plugin, options) {
 
       const actions = createElSafe('div', 'ct-header-actions');
       addIconButton(actions, 'plus', 'Добавить событие', () => plugin.openEventModal());
-      addIconButton(actions, 'refresh-cw', 'Обновить', () => draw());
+      if (typeof plugin.syncAll === 'function') {
+        addIconButton(actions, 'refresh-cw', 'Обновить даты с сайтов', () => plugin.syncAll({ notify: true }));
+      }
       header.appendChild(actions);
       root.appendChild(header);
     }
@@ -814,11 +1764,13 @@ function renderWidget(container, plugin, options) {
       });
     }
 
-    let items = filterEvents(events, state.view, settings, nowDay);
+    let items = buildItems(events, state.view, settings, nowDay);
     if (state.limit > 0) items = items.slice(0, state.limit);
 
     if (showHero && state.view !== 'past') {
-      const heroItem = pickHero(items.length > 0 ? items : filterEvents(events, 'all', settings, nowDay));
+      const heroPool =
+        items.length > 0 ? items : buildItems(events, 'upcoming', settings, nowDay);
+      const heroItem = pickHero(heroPool);
       if (heroItem) renderHero(root, heroItem);
     }
 
@@ -859,6 +1811,10 @@ function renderWidget(container, plugin, options) {
           canEdit: true,
           onEdit: (event) => plugin.openEventModal(event),
           onDelete: (event) => plugin.deleteEvent(event),
+          onSync:
+            typeof plugin.syncEventById === 'function'
+              ? (event) => plugin.syncEventById(event.id, true)
+              : null,
         });
       });
       root.appendChild(list);
@@ -931,9 +1887,7 @@ class ConfirmModal extends Modal {
     content.appendChild(createElSafe('p', 'ct-modal-text', this.message));
 
     new Setting(content)
-      .addButton((button) =>
-        button.setButtonText('Отмена').onClick(() => this.close()),
-      )
+      .addButton((button) => button.setButtonText('Отмена').onClick(() => this.close()))
       .addButton((button) =>
         button
           .setButtonText(this.confirmLabel)
@@ -950,30 +1904,77 @@ class ConfirmModal extends Modal {
   }
 }
 
+function createDateInput(value, label, onChange) {
+  const input = document.createElement('input');
+  input.type = 'date';
+  input.className = 'ct-input-date';
+  input.value = value || '';
+  input.setAttribute('aria-label', label);
+  input.addEventListener('change', () => onChange(input.value));
+  input.addEventListener('input', () => onChange(input.value));
+  return input;
+}
+
+function createTextInput(value, placeholder, label, onChange) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'ct-input-text';
+  input.value = value || '';
+  input.placeholder = placeholder || '';
+  if (label) input.setAttribute('aria-label', label);
+  input.addEventListener('input', () => onChange(input.value));
+  return input;
+}
+
 class EventModal extends Modal {
   constructor(app, plugin, event) {
     super(app);
     this.plugin = plugin;
     this.event = event || null;
-    this.draft = event
-      ? Object.assign({}, event)
-      : {
-          id: '',
-          title: '',
-          fullTitle: '',
-          category: 'Конференция',
-          start: '',
-          end: '',
-          expectedMonth: '',
-          place: '',
-          url: '',
-          note: '',
-          previous: '',
-          tentative: false,
-        };
+    const source = event || {};
+
+    this.draft = {
+      id: source.id || '',
+      title: source.title || '',
+      fullTitle: source.fullTitle || '',
+      category: source.category || 'Конференция',
+      url: source.url || '',
+      note: source.note || '',
+      expectedMonth: source.expectedMonth || '',
+      historyNote: source.historyNote || '',
+      sync: source.sync ? cloneData(source.sync) : { enabled: true, sources: [] },
+    };
+
+    this.nextEdition = null;
+    this.history = [];
+    this.tentative = false;
+    this.nextStart = '';
+    this.nextEnd = '';
+    this.nextPlace = '';
+    this.syncEnabled = this.draft.sync.enabled !== false;
+    this.syncSourcesText = (this.draft.sync.sources || []).join('\n');
+
+    if (event) {
+      const today = todayDayNumber();
+      const nearest = getNearestEdition(event, today);
+      if (nearest) {
+        this.nextEdition = cloneData(nearest);
+        this.nextStart = nearest.start;
+        this.nextEnd = nearest.end || '';
+        this.nextPlace = nearest.place || '';
+      }
+      this.tentative = !nearest;
+      this.history = (event.editions || [])
+        .filter((edition) => !nearest || edition.start !== nearest.start)
+        .map((edition) => cloneData(edition));
+    } else {
+      this.tentative = false;
+    }
+
     this.errorsEl = null;
     this.dateFields = null;
     this.expectedFields = null;
+    this.historyListEl = null;
   }
 
   onOpen() {
@@ -992,18 +1993,18 @@ class EventModal extends Modal {
     const content = this.contentEl;
     clearNode(content);
 
-    const nameSetting = new Setting(content)
+    new Setting(content)
       .setName('Название')
-      .setDesc('Так событие будет называться в виджете.');
-    nameSetting.addText((text) => {
-      text
-        .setPlaceholder('Например, Технопром')
-        .setValue(this.draft.title || '')
-        .onChange((value) => {
-          this.draft.title = value;
-        });
-      text.inputEl.classList.add('ct-input-wide');
-    });
+      .setDesc('Так событие будет называться в виджете.')
+      .addText((text) => {
+        text
+          .setPlaceholder('Например, Технопром')
+          .setValue(this.draft.title || '')
+          .onChange((value) => {
+            this.draft.title = value;
+          });
+        text.inputEl.classList.add('ct-input-wide');
+      });
 
     new Setting(content).setName('Полное название').addText((text) => {
       text
@@ -1028,15 +2029,11 @@ class EventModal extends Modal {
 
     new Setting(content)
       .setName('Дата уточняется')
-      .setDesc('Включите, если точные даты ещё не объявлены.')
+      .setDesc('Включите, если точные даты следующего проведения ещё не объявлены.')
       .addToggle((toggle) =>
-        toggle.setValue(!!this.draft.tentative).onChange((value) => {
-          this.draft.tentative = value;
-          if (value) {
-            this.draft.start = '';
-            this.draft.end = '';
-          }
-          this.syncDateFields();
+        toggle.setValue(!!this.tentative).onChange((value) => {
+          this.tentative = value;
+          this.syncVisibility();
         }),
       );
 
@@ -1045,17 +2042,30 @@ class EventModal extends Modal {
 
     new Setting(this.dateFields).setName('Дата начала').addText((text) => {
       text.inputEl.type = 'date';
-      text.setValue(this.draft.start || '').onChange((value) => {
-        this.draft.start = value;
+      text.setValue(this.nextStart || '').onChange((value) => {
+        this.nextStart = value;
       });
     });
 
     new Setting(this.dateFields).setName('Дата окончания').addText((text) => {
       text.inputEl.type = 'date';
-      text.setValue(this.draft.end || '').onChange((value) => {
-        this.draft.end = value;
+      text.setValue(this.nextEnd || '').onChange((value) => {
+        this.nextEnd = value;
       });
     });
+
+    new Setting(this.dateFields)
+      .setName('Место проведения')
+      .setDesc('Город или регион · площадка.')
+      .addText((text) => {
+        text
+          .setPlaceholder('Например, Алтайский край · Сибирский агропарк')
+          .setValue(this.nextPlace || '')
+          .onChange((value) => {
+            this.nextPlace = value;
+          });
+        text.inputEl.classList.add('ct-input-wide');
+      });
 
     this.expectedFields = createElSafe('div', 'ct-modal-section');
     content.appendChild(this.expectedFields);
@@ -1070,15 +2080,54 @@ class EventModal extends Modal {
         });
       });
 
-    new Setting(content).setName('Место').addText((text) => {
-      text
-        .setPlaceholder('Город · площадка')
-        .setValue(this.draft.place || '')
-        .onChange((value) => {
-          this.draft.place = value;
-        });
-      text.inputEl.classList.add('ct-input-wide');
+    const historyHeading = createElSafe('div', 'ct-modal-heading');
+    historyHeading.textContent = 'История проведений';
+    content.appendChild(historyHeading);
+    content.appendChild(
+      createElSafe(
+        'div',
+        'ct-modal-hint',
+        'Даты и места прошлых лет. Именно они показываются в карточке как «Прошлый раз».',
+      ),
+    );
+
+    this.historyListEl = createElSafe('div', 'ct-history-editor');
+    content.appendChild(this.historyListEl);
+
+    const addHistoryButton = createElSafe('button', 'ct-secondary-btn', '+ Добавить проведение');
+    addHistoryButton.type = 'button';
+    addHistoryButton.addEventListener('click', () => {
+      this.history.push({ start: '', end: '', place: '', source: 'manual' });
+      this.renderHistoryRows();
     });
+    content.appendChild(addHistoryButton);
+
+    const syncHeading = createElSafe('div', 'ct-modal-heading');
+    syncHeading.textContent = 'Автообновление';
+    content.appendChild(syncHeading);
+
+    new Setting(content)
+      .setName('Искать даты на официальном сайте')
+      .setDesc('Плагин читает страницу и обновляет предстоящее проведение, не затирая ручные правки.')
+      .addToggle((toggle) =>
+        toggle.setValue(!!this.syncEnabled).onChange((value) => {
+          this.syncEnabled = value;
+        }),
+      );
+
+    new Setting(content)
+      .setName('Источники')
+      .setDesc('По одному адресу в строке. Пусто — используется адрес из поля «Сайт».')
+      .addTextArea((text) => {
+        text
+          .setPlaceholder('https://example.ru/')
+          .setValue(this.syncSourcesText)
+          .onChange((value) => {
+            this.syncSourcesText = value;
+          });
+        text.inputEl.rows = 2;
+        text.inputEl.classList.add('ct-input-wide');
+      });
 
     new Setting(content).setName('Сайт').addText((text) => {
       text
@@ -1101,19 +2150,6 @@ class EventModal extends Modal {
       text.inputEl.classList.add('ct-input-wide');
     });
 
-    new Setting(content)
-      .setName('Прошлое проведение')
-      .setDesc('Необязательно: например, «2026 — 26–28 августа».')
-      .addText((text) => {
-        text
-          .setPlaceholder('2026 — 26–28 августа')
-          .setValue(this.draft.previous || '')
-          .onChange((value) => {
-            this.draft.previous = value;
-          });
-        text.inputEl.classList.add('ct-input-wide');
-      });
-
     this.errorsEl = createElSafe('div', 'ct-form-errors');
     content.appendChild(this.errorsEl);
 
@@ -1126,13 +2162,62 @@ class EventModal extends Modal {
       )
       .addButton((button) => button.setButtonText('Отмена').onClick(() => this.close()));
 
-    this.syncDateFields();
+    this.renderHistoryRows();
+    this.syncVisibility();
   }
 
-  syncDateFields() {
-    const tentative = !!this.draft.tentative;
-    if (this.dateFields) this.dateFields.style.display = tentative ? 'none' : '';
-    if (this.expectedFields) this.expectedFields.style.display = tentative ? '' : 'none';
+  renderHistoryRows() {
+    if (!this.historyListEl) return;
+    clearNode(this.historyListEl);
+
+    if (this.history.length === 0) {
+      this.historyListEl.appendChild(
+        createElSafe('div', 'ct-history-empty', 'Проведений пока нет — добавьте прошлые годы.'),
+      );
+      return;
+    }
+
+    this.history.forEach((row, index) => {
+      const wrapper = createElSafe('div', 'ct-history-row');
+
+      wrapper.appendChild(
+        createDateInput(row.start, 'Дата начала', (value) => {
+          this.history[index].start = value;
+        }),
+      );
+      wrapper.appendChild(
+        createDateInput(row.end, 'Дата окончания', (value) => {
+          this.history[index].end = value;
+        }),
+      );
+      wrapper.appendChild(
+        createTextInput(row.place || '', 'Место проведения', 'Место проведения', (value) => {
+          this.history[index].place = value;
+        }),
+      );
+
+      const remove = createElSafe('button', 'ct-icon-btn', '');
+      remove.type = 'button';
+      remove.title = 'Удалить проведение';
+      remove.setAttribute('aria-label', 'Удалить проведение');
+      try {
+        setIcon(remove, 'trash-2');
+      } catch (error) {
+        remove.textContent = '×';
+      }
+      remove.addEventListener('click', () => {
+        this.history.splice(index, 1);
+        this.renderHistoryRows();
+      });
+      wrapper.appendChild(remove);
+
+      this.historyListEl.appendChild(wrapper);
+    });
+  }
+
+  syncVisibility() {
+    if (this.dateFields) this.dateFields.style.display = this.tentative ? 'none' : '';
+    if (this.expectedFields) this.expectedFields.style.display = this.tentative ? '' : 'none';
   }
 
   validate() {
@@ -1141,29 +2226,80 @@ class EventModal extends Modal {
       errors.push('Укажите название события.');
     }
 
-    if (!this.draft.tentative && !this.draft.start) {
-      errors.push('Укажите дату начала или включите «Дата уточняется».');
-    }
-
-    if (this.draft.start) {
-      if (!isValidISODate(this.draft.start)) {
+    if (this.tentative) {
+      if (this.draft.expectedMonth && !parseMonth(this.draft.expectedMonth)) {
+        errors.push('Ориентировочный месяц должен быть в формате ГГГГ-ММ.');
+      }
+    } else {
+      if (!this.nextStart) {
+        errors.push('Укажите дату начала или включите «Дата уточняется».');
+      } else if (!isValidISODate(this.nextStart)) {
         errors.push('Дата начала должна быть в формате ГГГГ-ММ-ДД.');
       }
-      if (this.draft.end) {
-        if (!isValidISODate(this.draft.end)) {
+      if (this.nextEnd) {
+        if (!isValidISODate(this.nextEnd)) {
           errors.push('Дата окончания должна быть в формате ГГГГ-ММ-ДД.');
         } else if (
-          isValidISODate(this.draft.start) &&
-          parseISODate(this.draft.end).stamp < parseISODate(this.draft.start).stamp
+          isValidISODate(this.nextStart) &&
+          parseISODate(this.nextEnd).stamp < parseISODate(this.nextStart).stamp
         ) {
           errors.push('Дата окончания не может быть раньше даты начала.');
         }
       }
-    } else if (this.draft.expectedMonth && !parseMonth(this.draft.expectedMonth)) {
-      errors.push('Ориентировочный месяц должен быть в формате ГГГГ-ММ.');
     }
 
+    const seen = new Set(this.nextStart ? [this.nextStart] : []);
+    this.history.forEach((row, index) => {
+      if (!row.start && !row.end && !trimString(row.place)) return;
+      if (!row.start) {
+        errors.push(`Прошлое проведение №${index + 1}: укажите дату начала.`);
+        return;
+      }
+      if (!isValidISODate(row.start)) {
+        errors.push(`Прошлое проведение №${index + 1}: неверная дата начала.`);
+        return;
+      }
+      if (row.end && !isValidISODate(row.end)) {
+        errors.push(`Прошлое проведение №${index + 1}: неверная дата окончания.`);
+      } else if (row.end && parseISODate(row.end).stamp < parseISODate(row.start).stamp) {
+        errors.push(`Прошлое проведение №${index + 1}: окончание раньше начала.`);
+      }
+      if (seen.has(row.start)) {
+        errors.push(`Прошлое проведение №${index + 1}: дата ${row.start} уже указана.`);
+      }
+      seen.add(row.start);
+    });
+
     return errors;
+  }
+
+  buildEditions() {
+    const editions = [];
+
+    this.history.forEach((row) => {
+      if (!row.start) return;
+      const edition = normalizeEdition(
+        Object.assign({}, row, {
+          source: row.source === 'auto' ? 'auto' : 'manual',
+        }),
+      );
+      if (edition) editions.push(edition);
+    });
+
+    if (!this.tentative && this.nextStart) {
+      const edition = normalizeEdition({
+        start: this.nextStart,
+        end: this.nextEnd,
+        place: this.nextPlace,
+        source: this.nextEdition ? this.nextEdition.source : 'manual',
+        sourceUrl: this.nextEdition ? this.nextEdition.sourceUrl : '',
+        checkedAt: this.nextEdition ? this.nextEdition.checkedAt : '',
+        id: this.nextEdition ? this.nextEdition.id : '',
+      });
+      if (edition) editions.push(edition);
+    }
+
+    return dedupeEditions(editions);
   }
 
   async save() {
@@ -1184,15 +2320,25 @@ class EventModal extends Modal {
       return;
     }
 
-    const payload = Object.assign({}, this.draft);
-    if (payload.tentative || !payload.start) {
-      payload.start = '';
-      payload.end = '';
-      payload.tentative = true;
-    } else {
-      payload.expectedMonth = '';
-      payload.tentative = false;
-    }
+    const sources = this.syncSourcesText
+      .split(/\r?\n/)
+      .map((value) => normalizeUrl(value))
+      .filter(Boolean);
+    const fallbackSources = normalizeUrl(this.draft.url);
+    const finalSources = sources.length > 0 ? sources : fallbackSources ? [fallbackSources] : [];
+
+    const payload = Object.assign({}, this.draft, {
+      editions: this.buildEditions(),
+      previous: this.draft.historyNote || '',
+      expectedMonth: this.draft.expectedMonth || '',
+      sync: {
+        enabled: this.syncEnabled,
+        sources: Array.from(new Set(finalSources)),
+        lastSync: this.draft.sync.lastSync || '',
+        lastResult: this.draft.sync.lastResult || '',
+        lastError: this.draft.sync.lastError || '',
+      },
+    });
 
     await this.plugin.upsertEvent(payload);
     this.close();
@@ -1310,6 +2456,75 @@ class ConferenceSettingTab extends PluginSettingTab {
       },
     );
 
+    container.appendChild(createElSafe('h3', 'ct-settings-heading', 'Автообновление дат'));
+
+    this.addToggle(
+      'Обновлять даты и места с официальных сайтов',
+      'Плагин читает страницы из списка источников и подставляет предстоящее проведение. Ручные правки не затираются.',
+      this.plugin.settings.autoSync,
+      (value) => {
+        this.plugin.settings.autoSync = value;
+        this.plugin.persist();
+      },
+    );
+
+    new Setting(container)
+      .setName('Как часто проверять')
+      .setDesc('При запуске Obsidian, не чаще выбранного интервала.')
+      .addDropdown((dropdown) => {
+        dropdown.addOption('1', 'Каждый час');
+        dropdown.addOption('6', 'Раз в 6 часов');
+        dropdown.addOption('12', 'Раз в 12 часов');
+        dropdown.addOption('24', 'Раз в сутки');
+        dropdown.addOption('72', 'Раз в 3 дня');
+        dropdown.setValue(String(this.plugin.settings.syncIntervalHours)).onChange((value) => {
+          this.plugin.settings.syncIntervalHours = Number(value) || 12;
+          this.plugin.persist();
+        });
+      });
+
+    const statusParts = [];
+    if (this.plugin.settings.lastSyncAt) {
+      statusParts.push(`Последняя проверка: ${formatDateTimeRu(this.plugin.settings.lastSyncAt)}.`);
+    } else {
+      statusParts.push('Проверок ещё не было.');
+    }
+    if (this.plugin.settings.lastSyncSummary) {
+      statusParts.push(this.plugin.settings.lastSyncSummary);
+    }
+
+    const syncStatus = createElSafe('p', 'ct-settings-note', statusParts.join(' '));
+    container.appendChild(syncStatus);
+
+    new Setting(container)
+      .setName('Проверить сайты сейчас')
+      .setDesc('Запросит страницы и покажет, что удалось найти.')
+      .addButton((button) =>
+        button.setButtonText('Обновить').onClick(async () => {
+          button.setButtonText('Обновляю…');
+          button.setDisabled(true);
+          try {
+            const results = await this.plugin.syncAll({ notify: true });
+            button.setButtonText('Обновить');
+            button.setDisabled(false);
+            syncStatus.textContent = [
+              this.plugin.settings.lastSyncAt
+                ? `Последняя проверка: ${formatDateTimeRu(this.plugin.settings.lastSyncAt)}.`
+                : '',
+              this.plugin.settings.lastSyncSummary,
+            ]
+              .filter(Boolean)
+              .join(' ');
+            return results;
+          } catch (error) {
+            button.setButtonText('Обновить');
+            button.setDisabled(false);
+            new Notice(`Не удалось обновить: ${syncErrorMessage(error)}`);
+          }
+          return null;
+        }),
+      );
+
     container.appendChild(createElSafe('h3', 'ct-settings-heading', 'Данные'));
 
     const configDir = this.app && this.app.vault ? this.app.vault.configDir : '.obsidian';
@@ -1318,7 +2533,7 @@ class ConferenceSettingTab extends PluginSettingTab {
       createElSafe(
         'p',
         'ct-settings-note',
-        `События хранятся в ${dataPath} и синхронизируются вместе с настройками хранилища. Резервная копия — этот файл.`,
+        `События и история проведений хранятся в ${dataPath} и синхронизируются вместе с настройками хранилища. Резервная копия — этот файл.`,
       ),
     );
 
@@ -1331,7 +2546,7 @@ class ConferenceSettingTab extends PluginSettingTab {
 
     new Setting(container)
       .setName('Сбросить события к исходным')
-      .setDesc('Вернутся «Технопром», «День поля» и «Агронеделя».')
+      .setDesc('Вернутся «Технопром», «День поля» и «Агронеделя» с историей проведений.')
       .addButton((button) =>
         button
           .setButtonText('Сбросить')
@@ -1366,6 +2581,7 @@ class ConferenceTrackerPlugin extends Plugin {
     this.data = normalizeData(raw);
     this.settings = this.data.settings;
     this.listeners = new Set();
+    this.syncing = false;
 
     if (raw === null || raw === undefined) {
       await this.saveData(this.data);
@@ -1391,6 +2607,12 @@ class ConferenceTrackerPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: 'sync-events',
+      name: 'Обновить даты и места с сайтов',
+      callback: () => this.syncAll({ notify: true }),
+    });
+
+    this.addCommand({
       id: 'copy-as-markdown',
       name: 'Скопировать список событий как Markdown',
       callback: () => this.copyAsMarkdown(),
@@ -1403,6 +2625,12 @@ class ConferenceTrackerPlugin extends Plugin {
     if (this.settings.openOnStartup) {
       this.app.workspace.onLayoutReady(() => {
         this.activateView();
+      });
+    }
+
+    if (this.settings.autoSync) {
+      this.app.workspace.onLayoutReady(() => {
+        this.maybeAutoSync();
       });
     }
   }
@@ -1497,20 +2725,134 @@ class ConferenceTrackerPlugin extends Plugin {
     return leaf;
   }
 
-  buildMarkdownTable() {
-    const lines = [
-      '| Событие | Даты | Место | Сайт |',
-      '| --- | --- | --- | --- |',
-    ];
+  async fetchPage(url) {
+    if (typeof requestUrl !== 'function') {
+      throw new Error('запросы к сайтам недоступны в этой версии Obsidian');
+    }
 
-    sortEvents(this.data.events).forEach(({ event, state }) => {
-      const dates =
-        state.kind === 'tentative'
-          ? `Дата уточняется${event.expectedMonth ? ` (ориентир: ${formatMonthRu(event.expectedMonth)})` : ''}`
-          : formatRangeRu(event.start, event.end);
-      lines.push(
-        `| ${event.title} | ${dates} | ${event.place || '—'} | ${event.url || '—'} |`,
-      );
+    let timer = null;
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('таймаут запроса')), SYNC_TIMEOUT_MS);
+    });
+
+    try {
+      const response = await Promise.race([
+        requestUrl({
+          url,
+          method: 'GET',
+          throw: false,
+          headers: { Accept: 'text/html,application/xhtml+xml' },
+        }),
+        timeout,
+      ]);
+
+      if (response && response.status && response.status >= 400) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response && typeof response.text === 'string' ? response.text : '';
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async syncEventById(id, notify) {
+    const event = this.data.events.find((item) => item.id === id);
+    if (!event) return null;
+    if (!event.sync || !event.sync.enabled || event.sync.sources.length === 0) {
+      if (notify) new Notice('У этого события не настроены источники автообновления');
+      return null;
+    }
+
+    const nowDay = todayDayNumber();
+    const nowISO = new Date().toISOString();
+    let result;
+    try {
+      result = await syncEventWithFetcher(event, (url) => this.fetchPage(url), { nowDay, nowISO });
+    } catch (error) {
+      if (notify) new Notice(`Не удалось обновить: ${syncErrorMessage(error)}`);
+      return null;
+    }
+
+    const index = this.data.events.findIndex((item) => item.id === id);
+    if (index >= 0) this.data.events[index] = result.event;
+
+    this.settings.lastSyncAt = nowISO;
+    this.settings.lastSyncSummary = summarizeSyncResults([result]);
+    await this.persist();
+    if (notify) new Notice(`${event.title}: ${result.message}`);
+    return result;
+  }
+
+  async syncAll(options) {
+    const opts = options || {};
+    if (this.syncing) {
+      if (opts.notify) new Notice('Обновление уже выполняется');
+      return null;
+    }
+
+    this.syncing = true;
+    const nowDay = todayDayNumber();
+    const nowISO = new Date().toISOString();
+    const results = [];
+
+    try {
+      for (const event of this.data.events) {
+        if (!event.sync || !event.sync.enabled || event.sync.sources.length === 0) continue;
+        try {
+          const result = await syncEventWithFetcher(event, (url) => this.fetchPage(url), {
+            nowDay,
+            nowISO,
+          });
+          const index = this.data.events.findIndex((item) => item.id === event.id);
+          if (index >= 0) this.data.events[index] = result.event;
+          results.push(result);
+        } catch (error) {
+          results.push({ event, action: 'none', errors: [syncErrorMessage(error)], message: 'Ошибка' });
+        }
+      }
+
+      this.settings.lastSyncAt = nowISO;
+      this.settings.lastSyncSummary = summarizeSyncResults(results);
+      await this.persist();
+
+      if (opts.notify) new Notice(this.settings.lastSyncSummary);
+      return results;
+    } finally {
+      this.syncing = false;
+    }
+  }
+
+  async maybeAutoSync() {
+    if (!this.settings.autoSync) return;
+    const interval = Math.max(1, Number(this.settings.syncIntervalHours) || 12) * 3600 * 1000;
+    const last = Date.parse(this.settings.lastSyncAt || '');
+    if (Number.isFinite(last) && Date.now() - last < interval) return;
+    try {
+      await this.syncAll({ notify: false });
+    } catch (error) {
+      console.error('Conference Tracker: автообновление не удалось', error);
+    }
+  }
+
+  buildMarkdownTable() {
+    const lines = ['| Событие | Ближайшее | Место | Прошлый раз |', '| --- | --- | --- | --- |'];
+    const nowDay = todayDayNumber();
+    const items = buildItems(this.data.events, 'all', this.settings, nowDay);
+
+    items.forEach((item) => {
+      const event = item.event;
+      const next = item.display;
+      const last = item.lastPast;
+      const nextText = next
+        ? formatRangeRu(next.start, next.end)
+        : event.expectedMonth
+          ? `Дата уточняется (ориентир: ${formatMonthRu(event.expectedMonth)})`
+          : '—';
+      const nextPlace = next && next.place ? next.place : '—';
+      const lastText = last
+        ? `${formatRangeRu(last.start, last.end)}${last.place ? ` · ${last.place}` : ''}`
+        : event.historyNote || '—';
+      lines.push(`| ${event.title} | ${nextText} | ${nextPlace} | ${lastText} |`);
     });
 
     return lines.join('\n');
@@ -1531,12 +2873,16 @@ class ConferenceTrackerPlugin extends Plugin {
 module.exports = ConferenceTrackerPlugin;
 module.exports.__internals = {
   VIEW_TYPE,
+  DATA_VERSION,
+  MAX_EDITIONS,
+  SYNC_TIMEOUT_MS,
   CODE_BLOCK,
   DEFAULT_EVENTS,
   DEFAULT_SETTINGS,
   CATEGORIES,
   parseISODate,
   isValidISODate,
+  makeISO,
   dayNumberFromDate,
   todayDayNumber,
   parseMonth,
@@ -1544,18 +2890,37 @@ module.exports.__internals = {
   formatRangeRu,
   formatMonthRu,
   formatMonthTitle,
+  formatDateTimeRu,
   pluralRu,
-  getEventState,
+  editionState,
   formatCountdown,
-  sortEvents,
-  filterEvents,
+  getNearestEdition,
+  getLastPastEdition,
+  getPastEditions,
+  getEventState,
+  buildItem,
+  buildItems,
   countForMode,
   pickHero,
   buildSections,
+  sortItems,
+  normalizeEdition,
   normalizeEvent,
   normalizeData,
   normalizeSettings,
+  normalizeSync,
+  dedupeEditions,
   parseCodeBlockOptions,
+  decodeHtmlEntities,
+  stripHtml,
+  parseJsonLdEvents,
+  findDateRanges,
+  extractPlaceNear,
+  parseEventPage,
+  pickSyncCandidate,
+  applySyncCandidate,
+  syncEventWithFetcher,
+  summarizeSyncResults,
   renderWidget,
   ConferenceTrackerView,
   ConferenceCodeBlock,
