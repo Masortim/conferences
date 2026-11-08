@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Conference Tracker — превью виджета</title>
+  <link rel="stylesheet" href="../conference-tracker/styles.css" />
+  <style>
+    /* Переменные из темы Obsidian — чтобы превью выглядело как настоящая панель. */
+    :root {
+      --background-primary: #1e1e1e;
+      --background-primary-alt: #1a1a1a;
+      --background-secondary: #161616;
+      --background-secondary-alt: #262626;
+      --background-modifier-border: #333333;
+      --background-modifier-hover: rgba(255, 255, 255, 0.075);
+      --background-modifier-success: rgba(68, 207, 110, 0.16);
+      --background-modifier-error: rgba(251, 70, 76, 0.16);
+      --text-normal: #dadada;
+      --text-muted: #a3a3a3;
+      --text-faint: #6f6f6f;
+      --text-success: #44cf6e;
+      --text-error: #fb464c;
+      --text-on-accent: #ffffff;
+      --interactive-accent: #7f6df2;
+      --interactive-accent-hover: #9080f5;
+      --link-color: #9aa7ff;
+      --color-blue: #4c8bf5;
+      --color-green: #44cf6e;
+      --color-purple: #b48aff;
+      --color-orange: #ffa53d;
+      --color-yellow: #e0ac00;
+      --color-red: #fb464c;
+      --radius-s: 4px;
+      --radius-m: 8px;
+      --font-ui-smaller: 11px;
+      --font-ui-small: 13px;
+      --font-ui-medium: 15px;
+      --shadow-s: 0 1px 2px rgba(0, 0, 0, 0.35);
+
+      --page-bg: #0d0d10;
+      --page-bg-2: #14141a;
+      --page-text: #e8e8ee;
+      --page-muted: #9a9aa8;
+      --page-card: #17171e;
+      --page-border: #2a2a35;
+      --page-accent: #8b7cf7;
+      color-scheme: dark;
+    }
+
+    html[data-theme="light"] {
+      --background-primary: #ffffff;
+      --background-primary-alt: #fafafa;
+      --background-secondary: #f5f5f5;
+      --background-secondary-alt: #efefef;
+      --background-modifier-border: #dedede;
+      --background-modifier-hover: rgba(0, 0, 0, 0.055);
+      --background-modifier-success: rgba(26, 140, 64, 0.14);
+      --background-modifier-error: rgba(200, 30, 40, 0.12);
+      --text-normal: #222222;
+      --text-muted: #5c5c5c;
+      --text-faint: #989898;
+      --text-success: #1a8c40;
+      --text-error: #c81e28;
+      --text-on-accent: #ffffff;
+      --interactive-accent: #6c5ce7;
+      --interactive-accent-hover: #7d6ef0;
+      --link-color: #4f5bd5;
+      --color-blue: #2f6fdd;
+      --color-green: #1a8c40;
+      --color-purple: #7b4fd6;
+      --color-orange: #b8730a;
+      --color-yellow: #9a7b00;
+      --color-red: #c81e28;
+
+      --page-bg: #f2f2f6;
+      --page-bg-2: #e9e9f0;
+      --page-text: #1c1c24;
+      --page-muted: #5d5d6b;
+      --page-card: #ffffff;
+      --page-border: #dcdce4;
+      --page-accent: #6c5ce7;
+      color-scheme: light;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 40px 28px 56px;
+      min-height: 100vh;
+      background:
+        radial-gradient(900px 500px at 12% -10%, rgba(127, 109, 242, 0.18), transparent 65%),
+        radial-gradient(700px 420px at 100% 0%, rgba(68, 207, 110, 0.1), transparent 60%),
+        linear-gradient(180deg, var(--page-bg), var(--page-bg-2));
+      color: var(--page-text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, "Helvetica Neue", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .page-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      flex-wrap: wrap;
+      max-width: 1180px;
+      margin: 0 auto 30px;
+    }
+
+    .eyebrow {
+      color: var(--page-accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 6px 0 8px;
+      font-size: clamp(24px, 3vw, 34px);
+      line-height: 1.15;
+      letter-spacing: -0.01em;
+    }
+
+    .lede {
+      max-width: 720px;
+      margin: 0;
+      color: var(--page-muted);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    .lede strong { color: var(--page-text); font-weight: 600; }
+
+    #theme-toggle {
+      padding: 9px 16px;
+      border: 1px solid var(--page-border);
+      border-radius: 999px;
+      background: var(--page-card);
+      color: var(--page-text);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color 120ms ease, transform 120ms ease;
+      white-space: nowrap;
+    }
+
+    #theme-toggle:hover { border-color: var(--page-accent); transform: translateY(-1px); }
+
+    .panes {
+      display: flex;
+      align-items: flex-start;
+      gap: 28px;
+      flex-wrap: wrap;
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+
+    .pane-block { display: flex; flex-direction: column; gap: 9px; }
+
+    .pane-block--sidebar { width: 320px; flex: 0 0 auto; }
+    .pane-block--note { flex: 1 1 520px; max-width: 760px; }
+
+    .pane-caption {
+      color: var(--page-muted);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .obsidian-pane {
+      border: 1px solid var(--page-border);
+      border-radius: 12px;
+      background: var(--background-secondary);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+    }
+
+    html[data-theme="light"] .obsidian-pane { box-shadow: 0 16px 32px rgba(30, 30, 60, 0.08); }
+
+    .obsidian-pane--sidebar { padding: 10px 10px 14px; }
+    .obsidian-pane--note {
+      padding: 26px 30px 30px;
+      background: var(--background-primary);
+    }
+
+    .fake-window-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 4px 8px;
+      color: var(--text-faint);
+      font-size: 11px;
+    }
+
+    .fake-window-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--background-modifier-border);
+    }
+
+    .fake-window-title { margin-left: auto; letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; }
+
+    .fake-note-title {
+      margin-bottom: 18px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--background-modifier-border);
+      color: var(--text-normal);
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    .fake-note-text {
+      margin: 20px 0 0;
+      padding-top: 14px;
+      border-top: 1px solid var(--background-modifier-border);
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    footer {
+      max-width: 1180px;
+      margin: 34px auto 0;
+      color: var(--page-muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    code {
+      padding: 1px 6px;
+      border-radius: 5px;
+      background: var(--background-modifier-hover);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .ct-toast {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      max-width: 330px;
+      padding: 12px 16px;
+      border: 1px solid var(--page-border);
+      border-radius: 10px;
+      background: var(--page-card);
+      color: var(--page-text);
+      font-size: 13px;
+      line-height: 1.45;
+      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.3);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 160ms ease, transform 160ms ease;
+      pointer-events: none;
+    }
+
+    .ct-toast.is-visible { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 720px) {
+      body { padding: 24px 16px 40px; }
+      .pane-block--sidebar { width: 100%; }
+      .obsidian-pane--note { padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="page-header">
+    <div>
+      <div class="eyebrow">Obsidian · плагин Conference Tracker</div>
+      <h1>Виджет «Конференции»</h1>
+      <p class="lede">
+        Живое превью интерфейса на тех же файлах, что и в плагине:
+        <code>main.js</code> и <code>styles.css</code>. Вкладки работают,
+        тема переключается. <strong>Добавление и удаление событий</strong> в превью
+        отключены — в Obsidian они сохраняются в <code>data.json</code> плагина.
+      </p>
+    </div>
+    <button id="theme-toggle" type="button">☀︎ Светлая тема</button>
+  </header>
+
+  <main class="panes">
+    <section class="pane-block pane-block--sidebar">
+      <div class="pane-caption">Правая боковая панель</div>
+      <div class="obsidian-pane obsidian-pane--sidebar">
+        <div class="fake-window-bar">
+          <span class="fake-window-dot"></span>
+          <span class="fake-window-dot"></span>
+          <span class="fake-window-dot"></span>
+          <span class="fake-window-title">Obsidian</span>
+        </div>
+        <div id="sidebar-widget"></div>
+      </div>
+    </section>
+
+    <section class="pane-block pane-block--note">
+      <div class="pane-caption">Блок <code>conferences</code> внутри заметки</div>
+      <div class="obsidian-pane obsidian-pane--note">
+        <div class="fake-note-title">Календарь мероприятий</div>
+        <div id="inline-widget"></div>
+        <p class="fake-note-text">
+          Виджет встраивается в любую заметку и обновляется вместе с данными плагина:
+          даты, заметки и ссылки берутся из одного хранилища.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    В превью добавлено одно прошедшее событие — «Технопром-2026», чтобы показать вкладку «Прошедшие».
+    Даты по умолчанию: «Агронеделя» — 10–12 ноября 2026, «Технопром» — ориентир август 2027,
+    «День поля» — ориентир июль 2027. Актуальность проверяйте на официальных сайтах.
+  </footer>
+
+  <div class="ct-toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Мини-заглушка API Obsidian: плагин загружается в браузере без Obsidian. -->
+  <script>
+    (function () {
+      function svgIcon(el, name) {
+        var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', 'svg-icon');
+        svg.setAttribute('data-icon', name);
+        svg.setAttribute('width', '14');
+        svg.setAttribute('height', '14');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('fill', 'none');
+        svg.setAttribute('stroke', 'currentColor');
+        svg.setAttribute('stroke-width', '2');
+        svg.setAttribute('stroke-linecap', 'round');
+        svg.setAttribute('stroke-linejoin', 'round');
+        el.appendChild(svg);
+      }
+
+      function Notice(message) {
+        this.message = message;
+      }
+
+      window.__obsidianStub = {
+        Plugin: class {},
+        ItemView: class {},
+        PluginSettingTab: class {},
+        Setting: class {},
+        Modal: class {},
+        MarkdownRenderChild: class {},
+        MarkdownRenderer: class {},
+        Notice: Notice,
+        moment: {},
+        setIcon: svgIcon,
+      };
+
+      window.module = { exports: {} };
+      window.require = function (name) {
+        if (name === 'obsidian') return window.__obsidianStub;
+        throw new Error('Модуль недоступен в превью: ' + name);
+      };
+    })();
+  </script>
+
+  <!-- Настоящий код плагина. -->
+  <script src="../conference-tracker/main.js"></script>
+
+  <script>
+    (function () {
+      var api = window.module.exports.__internals;
+      var toastEl = document.getElementById('toast');
+      var toastTimer = null;
+
+      function toast(message) {
+        toastEl.textContent = message;
+        toastEl.classList.add('is-visible');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () {
+          toastEl.classList.remove('is-visible');
+        }, 3800);
+      }
+
+      var events = api.normalizeData(null).events;
+      events.push(
+        api.normalizeEvent({
+          id: 'technoprom-2026-demo',
+          title: 'Технопром-2026',
+          fullTitle: 'Прошедшая редакция форума — пример',
+          category: 'Форум',
+          start: '2026-08-26',
+          end: '2026-08-28',
+          place: 'Новосибирск · «Новосибирск Экспоцентр»',
+          url: 'https://форумтехнопром.рф/',
+          note: 'Пример прошедшего события: показывает вкладку «Прошедшие» и бейдж «Завершилось».',
+          previous: '2025 — 27–30 августа'
+        })
+      );
+
+      var settings = Object.assign({}, api.DEFAULT_SETTINGS);
+      var plugin = {
+        getEvents: function () { return events; },
+        getSettings: function () { return settings; },
+        onChange: function () { return function () {}; },
+        openEventModal: function () {
+          toast('В превью добавление событий недоступно. В Obsidian здесь откроется форма «Новое событие».');
+        },
+        deleteEvent: function () {
+          toast('В превью удаление недоступно. В Obsidian появится окно подтверждения.');
+        }
+      };
+
+      api.renderWidget(document.getElementById('sidebar-widget'), plugin, {
+        showHeader: true,
+        showFilters: true,
+        showHero: true,
+        compact: false
+      });
+
+      api.renderWidget(document.getElementById('inline-widget'), plugin, {
+        inline: true,
+        compact: true,
+        showHeader: false,
+        showFilters: true,
+        showHero: true
+      });
+
+      var toggle = document.getElementById('theme-toggle');
+      toggle.addEventListener('click', function () {
+        var root = document.documentElement;
+        var isLight = root.getAttribute('data-theme') === 'light';
+        root.setAttribute('data-theme', isLight ? 'dark' : 'light');
+        toggle.textContent = isLight ? '☀︎ Светлая тема' : '☾ Тёмная тема';
+      });
+    })();
+  </script>
+</body>
+</html>
