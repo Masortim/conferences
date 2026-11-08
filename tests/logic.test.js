@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadPluginModule } = require('./helpers');
+const { sampleEvents } = require('./fixtures');
 
 const { pluginModule } = loadPluginModule();
 const api = pluginModule.__internals;
@@ -231,7 +232,7 @@ test('buildItem показывает ближайшее проведение и 
 });
 
 test('buildItems фильтрует и сортирует события', () => {
-  const events = api.normalizeData(null).events;
+  const events = sampleEvents(api);
   const settings = Object.assign({}, api.DEFAULT_SETTINGS);
 
   const upcoming = api.buildItems(events, 'upcoming', settings, NOW);
@@ -324,7 +325,7 @@ test('getRelevantPastEdition выбирает текущий или прошлы
 });
 
 test('buildSections группирует по месяцам и статусам', () => {
-  const events = api.normalizeData(null).events;
+  const events = sampleEvents(api);
   const settings = Object.assign({}, api.DEFAULT_SETTINGS);
 
   const sections = api.buildSections(api.buildItems(events, 'all', settings, NOW), 'all');
@@ -344,7 +345,7 @@ test('buildSections группирует по месяцам и статусам
 });
 
 test('pickHero возвращает ближайшее текущее или будущее событие', () => {
-  const events = api.normalizeData(null).events;
+  const events = sampleEvents(api);
   const items = api.buildItems(events, 'upcoming', api.DEFAULT_SETTINGS, NOW);
   const hero = api.pickHero(items);
   assert.ok(hero);
@@ -406,34 +407,27 @@ test('normalizeData: события по умолчанию и настройк�
     seeded.events.map((event) => event.id),
     ['agroneweek', 'technoprom', 'field-day'],
   );
-  const editionsById = {
-    agroneweek: 2,
-    technoprom: 1,
-    'field-day': 1,
-  };
+
+  // В коде плагина нет дат и мест: только определения, ссылки и источники.
+  api.DEFAULT_EVENTS.forEach((event) => {
+    assert.equal(event.editions, undefined);
+    assert.equal(event.start, undefined);
+    assert.equal(event.end, undefined);
+    assert.equal(event.place, undefined);
+    assert.equal(event.expectedMonth, undefined);
+  });
+
   seeded.events.forEach((event) => {
-    assert.equal(event.editions.length, editionsById[event.id]);
+    assert.equal(event.editions.length, 0);
+    assert.equal(event.expectedMonth, '');
     assert.ok(event.url.startsWith('https://'));
     assert.equal(event.sync.enabled, true);
     assert.ok(event.sync.sources.length > 0);
+    assert.ok(event.note.length > 0);
   });
 
   const fieldDay = seeded.events.find((event) => event.id === 'field-day');
-  assert.equal(fieldDay.editions[0].start, '2026-07-16');
-  assert.match(fieldDay.editions[0].place, /Алтайский край/);
-  assert.match(fieldDay.editions[0].place, /Сибирский агропарк/);
-  assert.equal(fieldDay.expectedMonth, '2027-07');
   assert.deepEqual(fieldDay.regions, ['Новосибирская область', 'Новосибирск', 'Алтай']);
-  assert.ok(!fieldDay.editions.some((edition) => /Волгоград|Ставропол/.test(edition.place)));
-
-  const technoprom = seeded.events.find((event) => event.id === 'technoprom');
-  assert.equal(technoprom.editions[0].start, '2026-08-26');
-
-  const agroneweek = seeded.events.find((event) => event.id === 'agroneweek');
-  assert.deepEqual(
-    agroneweek.editions.map((edition) => edition.start),
-    ['2026-11-10', '2025-11-05'],
-  );
 
   assert.deepEqual(seeded.settings, api.DEFAULT_SETTINGS);
 
@@ -781,6 +775,85 @@ test('syncEventWithFetcher фиксирует ошибки источников'
   });
   assert.equal(empty.action, 'none');
   assert.equal(empty.message, 'Даты не найдены');
+});
+
+test('синхронизация подтягивает прошедшее проведение для «Прошлого раза»', async () => {
+  const html = `
+<html><head><title>Технопром</title>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@graph":[
+ {"@type":"Event","name":"Технопром 2026","startDate":"2026-08-26","endDate":"2026-08-28",
+  "location":{"@type":"Place","name":"Новосибирск Экспоцентр",
+  "address":{"@type":"PostalAddress","addressLocality":"Новосибирск"}}},
+ {"@type":"Event","name":"Технопром 2027","startDate":"2027-08-25","endDate":"2027-08-27",
+  "location":{"@type":"Place","name":"Новосибирск Экспоцентр",
+  "address":{"@type":"PostalAddress","addressLocality":"Новосибирск"}}}
+]}
+</script></head><body></body></html>`;
+
+  const event = api.normalizeEvent({
+    id: 'technoprom',
+    title: 'Технопром',
+    sync: { sources: ['https://форумтехнопром.рф/'] },
+  });
+
+  const result = await api.syncEventWithFetcher(event, async () => html, {
+    nowDay: NOW,
+    nowISO: '2026-11-08T10:00:00.000Z',
+  });
+
+  assert.equal(result.action, 'added');
+  assert.deepEqual(
+    result.event.editions.map((edition) => edition.start),
+    ['2027-08-25', '2026-08-26'],
+  );
+  assert.equal(result.event.expectedMonth, '2027-08');
+  assert.match(result.event.sync.lastResult, /25–27 августа 2027/);
+  assert.equal(api.getRelevantPastEdition(result.event, NOW).start, '2026-08-26');
+});
+
+test('если сайт показывает только прошедшую дату, она становится «Прошлым разом»', async () => {
+  const html = `
+<html><head><title>Технопром</title>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Event","name":"Технопром 2026",
+ "startDate":"2026-08-26","endDate":"2026-08-28",
+ "location":{"@type":"Place","name":"Новосибирск Экспоцентр",
+ "address":{"@type":"PostalAddress","addressLocality":"Новосибирск"}}}
+</script></head><body></body></html>`;
+
+  const event = api.normalizeEvent({
+    id: 'technoprom',
+    title: 'Технопром',
+    sync: { sources: ['https://форумтехнопром.рф/'] },
+  });
+
+  const result = await api.syncEventWithFetcher(event, async () => html, {
+    nowDay: NOW,
+    nowISO: '2026-11-08T10:00:00.000Z',
+  });
+
+  assert.equal(result.action, 'added');
+  assert.equal(result.event.editions.length, 1);
+  assert.equal(result.event.expectedMonth, '');
+  assert.equal(result.event.sync.lastResult, '');
+  assert.match(result.message, /^В истории найдено: 26–28 августа 2026/);
+  assert.equal(api.getRelevantPastEdition(result.event, NOW).start, '2026-08-26');
+});
+
+test('pickPastSyncCandidates не берёт архив старше прошлого года', () => {
+  const candidates = [
+    { start: '2024-08-28', end: '2024-08-30', place: 'Новосибирск', confidence: 0.9 },
+    { start: '2025-08-27', end: '2025-08-29', place: 'Новосибирск', confidence: 0.9 },
+    { start: '2026-08-26', end: '2026-08-28', place: 'Новосибирск', confidence: 0.9 },
+    { start: '2027-08-25', end: '2027-08-27', place: 'Новосибирск', confidence: 0.9 },
+  ];
+
+  const past = api.pickPastSyncCandidates(candidates, NOW);
+  assert.deepEqual(
+    past.map((candidate) => candidate.start),
+    ['2026-08-26', '2025-08-27'],
+  );
 });
 
 test('summarizeSyncResults собирает сводку', () => {

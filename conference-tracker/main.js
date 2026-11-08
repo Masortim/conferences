@@ -68,9 +68,9 @@ const DEFAULT_SETTINGS = {
 };
 
 /**
- * События на 8 ноября 2026 года.
- * Храним только актуальное прошлое (текущий или прошлый год) и только те
- * регионы «Дня поля», которые интересуют пользователя: НСО и Алтай.
+ * Определения событий по умолчанию: только метаданные и источники.
+ * Даты и места здесь не хранятся — плагин получает их с официальных сайтов
+ * при запуске и по команде обновления.
  */
 const DEFAULT_EVENTS = [
   {
@@ -80,19 +80,6 @@ const DEFAULT_EVENTS = [
     category: 'Выставка',
     url: 'https://sibagroweek.ru/',
     note: 'Международная агропромышленная выставка и Новосибирский агропродовольственный форум.',
-    expectedMonth: '2027-11',
-    editions: [
-      {
-        start: '2026-11-10',
-        end: '2026-11-12',
-        place: 'Новосибирск · МВК «Новосибирск Экспоцентр»',
-      },
-      {
-        start: '2025-11-05',
-        end: '2025-11-07',
-        place: 'Новосибирск · МВК «Новосибирск Экспоцентр»',
-      },
-    ],
     sync: { sources: ['https://sibagroweek.ru/'] },
   },
   {
@@ -101,15 +88,7 @@ const DEFAULT_EVENTS = [
     fullTitle: 'Международный форум технологического развития',
     category: 'Форум',
     url: 'https://форумтехнопром.рф/',
-    note: 'Даты 2027 года пока не объявлены — уточняйте на официальном сайте.',
-    expectedMonth: '2027-08',
-    editions: [
-      {
-        start: '2026-08-26',
-        end: '2026-08-28',
-        place: 'Новосибирск · «Новосибирск Экспоцентр»',
-      },
-    ],
+    note: 'Даты и место публикуются на официальном сайте форума.',
     sync: { sources: ['https://форумтехнопром.рф/'] },
   },
   {
@@ -118,16 +97,8 @@ const DEFAULT_EVENTS = [
     fullTitle: 'Всероссийский день поля',
     category: 'День поля',
     url: 'https://russian-field-day.ru/',
-    note: 'Всероссийский день поля ежегодно меняет регион; в плагине учитываются только Новосибирская область и Алтайский край. 2026 — Алтайский край, даты и место 2027 года уточняются.',
-    expectedMonth: '2027-07',
+    note: 'Всероссийский день поля ежегодно меняет регион; в плагине учитываются только Новосибирская область и Алтайский край.',
     regions: ['Новосибирская область', 'Новосибирск', 'Алтай'],
-    editions: [
-      {
-        start: '2026-07-16',
-        end: '2026-07-18',
-        place: 'Алтайский край · Сибирский агропарк, пос. Прутской',
-      },
-    ],
     sync: { sources: ['https://russian-field-day.ru/'] },
   },
 ];
@@ -1265,10 +1236,43 @@ function pickSyncCandidate(candidates, nowDay) {
 }
 
 /**
+ * Прошедшие проведения, которые нужны для строки «Прошлый раз»:
+ * только текущий и прошлый год. Более старые даты не импортируются.
+ */
+function pickPastSyncCandidates(candidates, nowDay) {
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  const currentYear = yearFromDay(today);
+  const minYear = currentYear - 1;
+  const acceptable = [];
+  const seen = new Set();
+
+  (Array.isArray(candidates) ? candidates : []).forEach((candidate) => {
+    if (!candidate || !isValidISODate(candidate.start)) return;
+    const parsed = parseISODate(candidate.start);
+    if (!parsed || parsed.year < minYear) return;
+    const state = editionState({ start: candidate.start, end: candidate.end }, today);
+    if (state.kind !== 'past') return;
+    const key = `${candidate.start}|${candidate.end}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    acceptable.push(Object.assign({}, candidate, { state }));
+  });
+
+  acceptable.sort(
+    (a, b) =>
+      b.confidence - a.confidence ||
+      b.state.startDay - a.state.startDay ||
+      String(a.place).length - String(b.place).length,
+  );
+  return acceptable;
+}
+
+/**
  * Применяет найденного кандидата к событию.
  * Ручное предстоящее проведение не перезаписывается — фиксируется конфликт.
  */
-function applySyncCandidate(event, candidate, nowISO, nowDay) {
+function applySyncCandidate(event, candidate, nowISO, nowDay, options) {
+  const opts = options || {};
   const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
   const result = { event: cloneData(event), action: 'none', conflict: '' };
   const target = result.event;
@@ -1277,7 +1281,9 @@ function applySyncCandidate(event, candidate, nowISO, nowDay) {
   if (!candidate || !isValidISODate(candidate.start)) return result;
 
   const targetState = editionState({ start: candidate.start, end: candidate.end }, today);
-  if (targetState.kind === 'past') return result;
+  const isFuture = targetState.kind === 'upcoming' || targetState.kind === 'ongoing';
+  // Прошедшие даты нужны только для «Прошлого раза»; обычный синк их не добавляет.
+  if (targetState.kind === 'past' && !opts.allowPast) return result;
 
   if (!editionAllowedInRegions({ place: candidate.place }, target)) {
     result.skipped = 'region';
@@ -1305,24 +1311,26 @@ function applySyncCandidate(event, candidate, nowISO, nowDay) {
     return result;
   }
 
-  const upcoming = target.editions.filter((edition) => {
-    const state = editionState(edition, today);
-    return state.kind === 'upcoming' || state.kind === 'ongoing';
-  });
-  const manualUpcoming = upcoming.find((edition) => edition.source !== 'auto');
+  if (isFuture) {
+    const upcoming = target.editions.filter((edition) => {
+      const state = editionState(edition, today);
+      return state.kind === 'upcoming' || state.kind === 'ongoing';
+    });
+    const manualUpcoming = upcoming.find((edition) => edition.source !== 'auto');
 
-  if (manualUpcoming) {
-    result.action = 'conflict';
-    result.conflict =
-      `На сайте: ${formatRangeRu(candidate.start, candidate.end)}` +
-      (candidate.place ? ` · ${candidate.place}` : '');
-    return result;
+    if (manualUpcoming) {
+      result.action = 'conflict';
+      result.conflict =
+        `На сайте: ${formatRangeRu(candidate.start, candidate.end)}` +
+        (candidate.place ? ` · ${candidate.place}` : '');
+      return result;
+    }
+
+    target.editions = target.editions.filter((edition) => {
+      const state = editionState(edition, today);
+      return !(edition.source === 'auto' && (state.kind === 'upcoming' || state.kind === 'ongoing'));
+    });
   }
-
-  target.editions = target.editions.filter((edition) => {
-    const state = editionState(edition, today);
-    return !(edition.source === 'auto' && (state.kind === 'upcoming' || state.kind === 'ongoing'));
-  });
 
   const edition = normalizeEdition({
     start: candidate.start,
@@ -1335,7 +1343,7 @@ function applySyncCandidate(event, candidate, nowISO, nowDay) {
 
   if (edition) target.editions.push(edition);
   target.editions = dedupeEditions(target.editions);
-  target.expectedMonth = candidate.start.slice(0, 7);
+  if (isFuture) target.expectedMonth = candidate.start.slice(0, 7);
   result.action = 'added';
   return result;
 }
@@ -1375,6 +1383,7 @@ async function syncEventWithFetcher(event, fetcher, options) {
   }
 
   const best = pickSyncCandidate(candidates, nowDay);
+  const pastCandidates = pickPastSyncCandidates(candidates, nowDay);
   const result = {
     event: working,
     action: 'none',
@@ -1388,31 +1397,72 @@ async function syncEventWithFetcher(event, fetcher, options) {
     lastError: errors.join('; '),
   });
 
-  if (!best) {
+  if (!best && pastCandidates.length === 0) {
     working.sync.lastResult = '';
     result.message = errors.length > 0 ? 'Не удалось получить данные' : 'Даты не найдены';
     return result;
   }
 
-  const applied = applySyncCandidate(working, best, nowISO, nowDay);
-  const updated = applied.event;
-  updated.sync = Object.assign({}, working.sync, {
-    lastSync: nowISO,
-    lastError: applied.conflict ? '' : errors.join('; '),
-    lastResult:
-      applied.conflict ||
-      `${formatRangeRu(best.start, best.end)}${best.place ? ` · ${best.place}` : ''}`,
+  let updated = working;
+  let applied = null;
+
+  if (best) {
+    applied = applySyncCandidate(working, best, nowISO, nowDay);
+    updated = applied.event;
+
+    if (applied.skipped === 'region') {
+      updated.sync = Object.assign({}, working.sync, { lastResult: '' });
+      result.event = updated;
+      result.skipped = 'region';
+      result.message = 'Дата вне разрешённых регионов';
+      return result;
+    }
+  }
+
+  // Прошедшие проведения текущего и прошлого года нужны только для «Прошлого раза».
+  let historyAdded = 0;
+  let historyUpdated = 0;
+  pastCandidates.forEach((candidate) => {
+    const history = applySyncCandidate(updated, candidate, nowISO, nowDay, { allowPast: true });
+    updated = history.event;
+    if (history.action === 'added') historyAdded += 1;
+    if (history.action === 'updated') historyUpdated += 1;
   });
 
-  result.event = updated;
-  result.action = applied.action;
-  if (applied.skipped === 'region') {
-    updated.sync.lastResult = '';
-    result.skipped = 'region';
-    result.message = 'Дата вне разрешённых регионов';
+  if (applied) {
+    updated.sync = Object.assign({}, working.sync, {
+      lastError: applied.conflict ? '' : errors.join('; '),
+      lastResult:
+        applied.conflict ||
+        `${formatRangeRu(best.start, best.end)}${best.place ? ` · ${best.place}` : ''}`,
+    });
+    result.event = updated;
+    result.action = applied.action;
+    const historyNote =
+      historyAdded > 0
+        ? ` · история: ${historyAdded}`
+        : historyUpdated > 0
+          ? ' · история уточнена'
+          : '';
+    result.message = (applied.conflict || describeSyncAction(applied.action, best)) + historyNote;
     return result;
   }
-  result.message = applied.conflict || describeSyncAction(applied.action, best);
+
+  updated.sync = Object.assign({}, working.sync, { lastResult: '' });
+  result.event = updated;
+
+  if (historyAdded > 0) {
+    const first = pastCandidates[0];
+    result.action = 'added';
+    result.message =
+      `В истории найдено: ${formatRangeRu(first.start, first.end)}` +
+      (first.place ? ` · ${first.place}` : '');
+  } else if (historyUpdated > 0) {
+    result.action = 'updated';
+    result.message = 'История уточнена';
+  } else {
+    result.message = 'Даты не найдены';
+  }
   return result;
 }
 
@@ -1589,6 +1639,50 @@ function renderHero(parent, item) {
   hero.appendChild(
     createElSafe('div', 'ct-hero-place', edition.place || 'Место уточняется'),
   );
+
+  parent.appendChild(hero);
+}
+
+/**
+ * Плейсхолдер вместо крупного блока, пока с сайтов не загружены даты.
+ * Даты и места не хранятся в коде, поэтому первый запуск начинается с этой карточки.
+ */
+function renderHeroPlaceholder(parent, plugin) {
+  const hero = createElSafe('div', 'ct-hero');
+  hero.dataset.state = 'tentative';
+  hero.dataset.category = 'Другое';
+
+  hero.appendChild(createElSafe('div', 'ct-hero-label', 'Даты и места'));
+  hero.appendChild(createElSafe('div', 'ct-hero-title', 'Загрузка с официальных сайтов'));
+
+  const count = createElSafe('div', 'ct-hero-count');
+  count.appendChild(createElSafe('span', 'ct-hero-text', 'Дата уточняется'));
+  hero.appendChild(count);
+
+  hero.appendChild(
+    createElSafe('div', 'ct-hero-date', 'Плагин читает страницы событий и заполняет даты сам.'),
+  );
+  hero.appendChild(
+    createElSafe('div', 'ct-hero-place', 'Если сайт недоступен, дату можно вписать вручную.'),
+  );
+
+  if (typeof plugin.syncAll === 'function') {
+    const action = createElSafe('div', 'ct-hero-action');
+    const button = createElSafe('button', 'ct-primary-btn', 'Обновить');
+    button.type = 'button';
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      button.textContent = 'Обновляем…';
+      try {
+        await plugin.syncAll({ notify: true });
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Обновить';
+      }
+    });
+    action.appendChild(button);
+    hero.appendChild(action);
+  }
 
   parent.appendChild(hero);
 }
@@ -1827,7 +1921,14 @@ function renderWidget(container, plugin, options) {
       const heroPool =
         items.length > 0 ? items : buildItems(events, 'upcoming', settings, nowDay);
       const heroItem = pickHero(heroPool);
-      if (heroItem) renderHero(root, heroItem);
+      if (heroItem) {
+        renderHero(root, heroItem);
+      } else if (
+        items.length > 0 &&
+        items.every((item) => !item.displayState || item.displayState.kind === 'tentative')
+      ) {
+        renderHeroPlaceholder(root, plugin);
+      }
     }
 
     if (items.length === 0) {
@@ -2443,6 +2544,8 @@ class ConferenceTrackerView extends ItemView {
     this.contentEl.classList.add('ct-panel');
     this.unsubscribe = this.plugin.onChange(() => this.render());
     this.render();
+    // Даты и места не хранятся в коде — подтягиваем их с сайтов при открытии панели.
+    if (typeof this.plugin.maybeAutoSync === 'function') this.plugin.maybeAutoSync();
   }
 
   async onClose() {
@@ -2530,7 +2633,7 @@ class ConferenceSettingTab extends PluginSettingTab {
 
     this.addToggle(
       'Обновлять даты и места с официальных сайтов',
-      'Плагин читает страницы из списка источников и подставляет предстоящее проведение. Ручные правки не затираются.',
+      'Плагин читает страницы источников и подставляет даты и места. Прошедшее проведение текущего или прошлого года сохраняется для строки «Прошлый раз». Ручные правки не затираются.',
       this.plugin.settings.autoSync,
       (value) => {
         this.plugin.settings.autoSync = value;
@@ -2540,7 +2643,7 @@ class ConferenceSettingTab extends PluginSettingTab {
 
     new Setting(container)
       .setName('Как часто проверять')
-      .setDesc('При запуске Obsidian, не чаще выбранного интервала.')
+      .setDesc('При запуске Obsidian и при открытии панели, но не чаще выбранного интервала.')
       .addDropdown((dropdown) => {
         dropdown.addOption('1', 'Каждый час');
         dropdown.addOption('6', 'Раз в 6 часов');
@@ -2772,8 +2875,12 @@ class ConferenceTrackerPlugin extends Plugin {
 
   async resetEvents() {
     this.data.events = DEFAULT_EVENTS.map((event) => normalizeEvent(event));
+    // Дат в коде нет — после сброса их нужно заново загрузить с сайтов.
+    this.settings.lastSyncAt = '';
+    this.settings.lastSyncSummary = '';
     await this.persist();
-    new Notice('События восстановлены по умолчанию');
+    new Notice('События восстановлены — даты загружаются с сайтов');
+    this.maybeAutoSync();
   }
 
   openEventModal(event) {
@@ -2792,6 +2899,7 @@ class ConferenceTrackerPlugin extends Plugin {
     }
 
     workspace.revealLeaf(leaf);
+    this.maybeAutoSync();
     return leaf;
   }
 
@@ -2894,6 +3002,7 @@ class ConferenceTrackerPlugin extends Plugin {
 
   async maybeAutoSync() {
     if (!this.settings.autoSync) return;
+    if (this.syncing) return;
     const interval = Math.max(1, Number(this.settings.syncIntervalHours) || 12) * 3600 * 1000;
     const last = Date.parse(this.settings.lastSyncAt || '');
     if (Number.isFinite(last) && Date.now() - last < interval) return;
@@ -2992,10 +3101,12 @@ module.exports.__internals = {
   extractPlaceNear,
   parseEventPage,
   pickSyncCandidate,
+  pickPastSyncCandidates,
   applySyncCandidate,
   syncEventWithFetcher,
   summarizeSyncResults,
   renderWidget,
+  renderHeroPlaceholder,
   ConferenceTrackerView,
   ConferenceCodeBlock,
   EventModal,

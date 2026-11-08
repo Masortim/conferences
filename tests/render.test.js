@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { setupDom, loadPluginModule } = require('./helpers');
+const { sampleEvents } = require('./fixtures');
 
 let jsdomAvailable = true;
 try {
@@ -29,7 +30,7 @@ function createFakePlugin(events) {
   const settings = Object.assign({}, api.DEFAULT_SETTINGS);
   return {
     data: {
-      events: events || api.normalizeData(null).events,
+      events: events || sampleEvents(api),
       settings,
     },
     settings,
@@ -231,6 +232,34 @@ test('автоматически найденные даты помечаютс�
   assert.match(conflict.textContent, /^На сайте: 5–6 мая 2027/);
 });
 
+test('без загруженных дат виджет показывает плейсхолдер и кнопку «Обновить»', { skip }, () => {
+  const events = api.normalizeData(null).events;
+  assert.ok(events.every((event) => event.editions.length === 0));
+
+  const plugin = createFakePlugin(events);
+  const root = container();
+  api.renderWidget(root, plugin, {
+    now: NOW,
+    showHeader: true,
+    showFilters: true,
+    showHero: true,
+  });
+
+  assert.equal(cards(root).length, 3);
+  const hero = root.querySelector('.ct-hero');
+  assert.ok(hero, 'плейсхолдер занимает место крупного блока');
+  assert.equal(hero.dataset.state, 'tentative');
+  assert.match(hero.textContent, /Дата уточняется/);
+  assert.match(hero.textContent, /официальных сайтов/);
+
+  const refresh = Array.from(root.querySelectorAll('button')).find(
+    (button) => button.textContent === 'Обновить',
+  );
+  assert.ok(refresh, 'есть кнопка «Обновить»');
+  refresh.click();
+  assert.equal(plugin.syncAllCalls, 1);
+});
+
 test('пустой список подсказывает добавить событие', { skip }, () => {
   const root = container();
   const plugin = createFakePlugin([]);
@@ -360,7 +389,7 @@ test('режим «Дата уточняется» сохраняет ориен
 
 test('история в модальном окне: добавление, удаление и сохранение', { skip }, async () => {
   const calls = [];
-  const events = api.normalizeData(null).events;
+  const events = sampleEvents(api);
   const agroneweek = events.find((event) => event.id === 'agroneweek');
   const plugin = createFakePlugin();
   plugin.upsertEvent = async (payload) => {
@@ -464,7 +493,7 @@ test('форма не показывает и не сохраняет прове
 
 test('модальное окно не сохраняет дубли дат', { skip }, async () => {
   const calls = [];
-  const events = api.normalizeData(null).events;
+  const events = sampleEvents(api);
   const agroneweek = events.find((event) => event.id === 'agroneweek');
   const plugin = createFakePlugin();
   plugin.upsertEvent = async (payload) => {

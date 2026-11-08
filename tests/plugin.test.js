@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { setupDom, loadPluginModule } = require('./helpers');
+const { sampleData } = require('./fixtures');
 
 let jsdomAvailable = true;
 try {
@@ -83,7 +84,7 @@ async function createPlugin(options) {
   return { plugin, app };
 }
 
-test('onload регистрирует панель, команды, блок кода и данные v2', { skip }, async () => {
+test('onload регистрирует панель, команды, блок кода и данные без дат', { skip }, async () => {
   const { plugin } = await createPlugin();
 
   assert.equal(plugin.getEvents().length, 3);
@@ -102,15 +103,23 @@ test('onload регистрирует панель, команды, блок к�
   assert.equal(plugin.savedData.version, api.DATA_VERSION);
   assert.equal(plugin.savedData.events.length, 3);
   assert.ok(plugin.savedData.events.every((event) => Array.isArray(event.editions)));
+  assert.ok(
+    plugin.savedData.events.every(
+      (event) => event.editions.length === 0 && event.expectedMonth === '',
+    ),
+    'даты и места не записаны в код — только источники',
+  );
   assert.equal(plugin.savedData.settings.openOnStartup, false);
   assert.equal(plugin.savedData.settings.autoSync, true);
 
   const fieldDay = plugin.getEvents().find((event) => event.id === 'field-day');
-  assert.match(fieldDay.editions[0].place, /Алтайский край/);
+  assert.deepEqual(fieldDay.regions, ['Новосибирская область', 'Новосибирск', 'Алтай']);
+  assert.equal(fieldDay.editions.length, 0);
 });
 
 test('activateView открывает панель один раз', { skip }, async () => {
   const { plugin, app } = await createPlugin();
+  plugin.settings.autoSync = false; // не ходим в сеть из теста
 
   const leaf = await plugin.activateView();
   assert.ok(leaf);
@@ -120,6 +129,25 @@ test('activateView открывает панель один раз', { skip }, a
   const sameLeaf = await plugin.activateView();
   assert.equal(app._leaves.length, 1);
   assert.equal(sameLeaf, leaf);
+});
+
+test('открытие панели запускает автозагрузку дат', { skip }, async () => {
+  const { plugin } = await createPlugin();
+  let calls = 0;
+  plugin.maybeAutoSync = async () => {
+    calls += 1;
+    return undefined;
+  };
+
+  const view = new api.ConferenceTrackerView({}, plugin);
+  view.contentEl = document.createElement('div');
+
+  await view.onOpen();
+  assert.equal(calls, 1);
+  assert.equal(view.contentEl.querySelectorAll('.ct-card').length, 3);
+  assert.ok(view.contentEl.querySelector('.ct-hero'));
+
+  await view.onClose();
 });
 
 test('upsertEvent добавляет и обновляет события с проведениями', { skip }, async () => {
@@ -163,6 +191,10 @@ test('upsertEvent добавляет и обновляет события с п�
 
 test('persist сохраняет настройки, resetEvents возвращает события по умолчанию', { skip }, async () => {
   const { plugin } = await createPlugin();
+  let autoSyncs = 0;
+  plugin.maybeAutoSync = async () => {
+    autoSyncs += 1;
+  };
 
   plugin.settings.showPast = false;
   await plugin.persist();
@@ -177,7 +209,9 @@ test('persist сохраняет настройки, resetEvents возвращ�
     plugin.getEvents().map((event) => event.id),
     ['agroneweek', 'technoprom', 'field-day'],
   );
+  assert.equal(plugin.getEvents().every((event) => event.editions.length === 0), true);
   assert.match(obsidian.Notice.messages.at(-1), /восстановлены/);
+  assert.equal(autoSyncs, 1, 'после сброса даты загружаются заново');
 });
 
 test('данные из data.json v1 мигрируют в проведения', { skip }, async () => {
@@ -211,7 +245,7 @@ test('данные из data.json v1 мигрируют в проведения'
 });
 
 test('блок кода подключается как MarkdownRenderChild', { skip }, async () => {
-  const { plugin } = await createPlugin();
+  const { plugin } = await createPlugin({ initialData: sampleData(api) });
   const el = document.createElement('div');
   const children = [];
   let rendered = false;
@@ -232,7 +266,7 @@ test('блок кода подключается как MarkdownRenderChild', { 
 });
 
 test('таблица Markdown содержит места и прошлые проведения', { skip }, async () => {
-  const { plugin } = await createPlugin();
+  const { plugin } = await createPlugin({ initialData: sampleData(api) });
   const table = plugin.buildMarkdownTable();
 
   assert.match(table, /\| Событие \| Ближайшее \| Место \| Прошлый раз \|/);
@@ -267,7 +301,7 @@ test('fetchPage использует requestUrl и проверяет стату
 });
 
 test('syncEventById обновляет событие и сохраняет данные', { skip }, async () => {
-  const { plugin } = await createPlugin();
+  const { plugin } = await createPlugin({ initialData: sampleData(api) });
   plugin.fetchPage = async () => JSON_LD_2027;
 
   const result = await plugin.syncEventById('field-day', true);
@@ -282,7 +316,7 @@ test('syncEventById обновляет событие и сохраняет да
 });
 
 test('syncAll обновляет источники и не затирает ручные даты', { skip }, async () => {
-  const { plugin } = await createPlugin();
+  const { plugin } = await createPlugin({ initialData: sampleData(api) });
   plugin.fetchPage = async () => JSON_LD_2027;
 
   const results = await plugin.syncAll({ notify: true });
@@ -306,6 +340,23 @@ test('syncAll обновляет источники и не затирает р�
   assert.match(plugin.settings.lastSyncSummary, /расхождений с сайтом: 1/);
   assert.match(obsidian.Notice.messages.at(-1), /новых дат: 2/);
   assert.ok(plugin.savedData.settings.lastSyncSummary);
+});
+
+test('syncAll заполняет пустые события по умолчанию с сайтов', { skip }, async () => {
+  const { plugin } = await createPlugin();
+  plugin.fetchPage = async () => JSON_LD_2027;
+
+  assert.ok(plugin.getEvents().every((event) => event.editions.length === 0));
+
+  const results = await plugin.syncAll({ notify: false });
+
+  assert.equal(results.length, 3);
+  assert.ok(results.every((result) => result.action === 'added'));
+  plugin.getEvents().forEach((event) => {
+    assert.equal(event.editions.length, 1);
+    assert.equal(event.editions[0].source, 'auto');
+  });
+  assert.ok(plugin.savedData.events.every((event) => event.editions.length === 1));
 });
 
 test('maybeAutoSync соблюдает интервал', { skip }, async () => {
@@ -332,7 +383,7 @@ test('maybeAutoSync соблюдает интервал', { skip }, async () => 
 });
 
 test('copyAsMarkdown копирует таблицу в буфер обмена', { skip }, async () => {
-  const { plugin } = await createPlugin();
+  const { plugin } = await createPlugin({ initialData: sampleData(api) });
   let copied = null;
 
   Object.defineProperty(global, 'navigator', {
