@@ -631,7 +631,9 @@ function renderHero(parent, item) {
           state.lastDay ? 'Финал' : `${state.dayIndex}/${state.length}`,
         ),
       );
-      count.appendChild(createElSafe('span', 'ct-hero-unit-note', 'день события'));
+      count.appendChild(
+        createElSafe('span', 'ct-hero-unit-note', state.lastDay ? 'последний день' : 'день события'),
+      );
     }
     hero.appendChild(count);
   }
