@@ -2879,7 +2879,11 @@ class ConferenceTrackerPlugin extends Plugin {
     this.settings.lastSyncAt = '';
     this.settings.lastSyncSummary = '';
     await this.persist();
-    new Notice('События восстановлены — даты загружаются с сайтов');
+    new Notice(
+      this.settings.autoSync
+        ? 'События восстановлены — даты загружаются с сайтов'
+        : 'События восстановлены — даты можно ввести вручную',
+    );
     this.maybeAutoSync();
   }
 
