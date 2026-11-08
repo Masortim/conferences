@@ -572,3 +572,179 @@
 .ct-panel .ct-widget {
   padding-bottom: 4px;
 }
+
+/* ---------- История проведений ---------- */
+
+.ct-meta--muted {
+  color: var(--text-faint);
+}
+
+.ct-meta--past {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+.ct-meta--past .ct-meta-text {
+  color: var(--text-muted);
+}
+
+.ct-history {
+  margin-top: 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 5px);
+  background: var(--background-secondary-alt, var(--background-secondary));
+  font-size: var(--font-ui-smaller, 11px);
+}
+
+.ct-history-summary {
+  padding: 5px 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.ct-history-summary::-webkit-details-marker {
+  display: none;
+}
+
+.ct-history-summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 5px;
+  transition: transform 120ms ease;
+}
+
+.ct-history[open] .ct-history-summary::before {
+  transform: rotate(90deg);
+}
+
+.ct-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 8px 7px;
+}
+
+.ct-history-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.ct-history-date {
+  color: var(--text-normal);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ct-history-place {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.ct-chip--auto {
+  background: transparent;
+  border: 1px solid var(--color-blue, #4c8bf5);
+  color: var(--color-blue, #4c8bf5);
+  font-weight: 500;
+}
+
+.ct-sync-conflict {
+  margin-top: 6px;
+  padding: 4px 7px;
+  border-left: 2px solid var(--color-orange, #d29922);
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 11px);
+}
+
+.ct-sync-error {
+  color: var(--text-error, var(--color-red, #e5534b));
+}
+
+/* ---------- Редактор истории в модальном окне ---------- */
+
+.ct-modal-heading {
+  margin: 16px 0 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-small, 13px);
+  font-weight: 600;
+}
+
+.ct-modal-hint {
+  margin-bottom: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 11px);
+  line-height: 1.4;
+}
+
+.ct-history-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ct-history-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ct-history-row .ct-input-date {
+  flex: 1 1 130px;
+  min-width: 120px;
+}
+
+.ct-history-row .ct-input-text {
+  flex: 2 1 200px;
+  min-width: 150px;
+}
+
+.ct-history-row .ct-icon-btn {
+  flex: 0 0 auto;
+}
+
+.ct-history-empty {
+  padding: 8px 0;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller, 11px);
+}
+
+.ct-secondary-btn {
+  margin-top: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 5px);
+  background: transparent;
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller, 12px);
+  cursor: pointer;
+}
+
+.ct-secondary-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ct-input-date,
+.ct-input-text {
+  height: 28px;
+  padding: 2px 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller, 12px);
+}
+
+.ct-input-date:focus,
+.ct-input-text:focus {
+  border-color: var(--interactive-accent);
+  outline: none;
+}

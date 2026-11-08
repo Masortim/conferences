@@ -9,19 +9,31 @@ const api = pluginModule.__internals;
 
 const NOW = api.todayDayNumber(new Date(2026, 10, 8)); // 8 ноября 2026
 
-function event(overrides) {
+function edition(start, end, place, extra) {
+  return Object.assign({ start, end: end || '', place: place || '' }, extra || {});
+}
+
+function makeEvent(overrides) {
   return Object.assign(
     {
       id: 'test',
       title: 'Событие',
       category: 'Конференция',
-      start: '',
-      end: '',
+      url: '',
+      note: '',
       expectedMonth: '',
+      editions: [],
+      sync: { enabled: false, sources: [] },
     },
-    overrides,
+    overrides || {},
   );
 }
+
+function ids(items) {
+  return items.map((item) => item.event.id);
+}
+
+/* ---------------- Даты и форматирование ---------------- */
 
 test('parseISODate принимает только существующие даты', () => {
   assert.equal(api.isValidISODate('2026-11-08'), true);
@@ -61,265 +73,583 @@ test('pluralRu выбирает правильную форму', () => {
   assert.equal(api.pluralRu(0, forms), 'дней');
 });
 
-test('getEventState определяет фазу события', () => {
-  const upcoming = api.getEventState(event({ start: '2026-11-10', end: '2026-11-12' }), NOW);
+/* ---------------- Проведения ---------------- */
+
+test('editionState определяет фазу проведения', () => {
+  const upcoming = api.editionState(edition('2026-11-10', '2026-11-12'), NOW);
   assert.equal(upcoming.kind, 'upcoming');
   assert.equal(upcoming.days, 2);
   assert.equal(upcoming.length, 3);
 
-  const tomorrow = api.getEventState(event({ start: '2026-11-09' }), NOW);
+  const tomorrow = api.editionState(edition('2026-11-09'), NOW);
   assert.equal(tomorrow.kind, 'upcoming');
   assert.equal(tomorrow.days, 1);
 
-  const ongoing = api.getEventState(event({ start: '2026-11-07', end: '2026-11-09' }), NOW);
+  const ongoing = api.editionState(edition('2026-11-07', '2026-11-09'), NOW);
   assert.equal(ongoing.kind, 'ongoing');
   assert.equal(ongoing.dayIndex, 2);
   assert.equal(ongoing.length, 3);
   assert.equal(ongoing.lastDay, false);
 
-  const lastDay = api.getEventState(event({ start: '2026-11-06', end: '2026-11-08' }), NOW);
+  const lastDay = api.editionState(edition('2026-11-06', '2026-11-08'), NOW);
   assert.equal(lastDay.kind, 'ongoing');
   assert.equal(lastDay.lastDay, true);
 
-  const oneDay = api.getEventState(event({ start: '2026-11-08' }), NOW);
+  const oneDay = api.editionState(edition('2026-11-08'), NOW);
   assert.equal(oneDay.kind, 'ongoing');
   assert.equal(oneDay.length, 1);
 
-  const past = api.getEventState(event({ start: '2026-11-01', end: '2026-11-03' }), NOW);
+  const past = api.editionState(edition('2026-11-01', '2026-11-03'), NOW);
   assert.equal(past.kind, 'past');
   assert.equal(past.daysAgo, 5);
 
-  const tentative = api.getEventState(event({ expectedMonth: '2027-08' }), NOW);
+  const tentative = api.editionState({}, NOW);
   assert.equal(tentative.kind, 'tentative');
 });
 
-test('getEventState не зависит от порядка дат и часового пояса', () => {
-  const inverted = api.getEventState(event({ start: '2026-11-12', end: '2026-11-10' }), NOW);
-  assert.equal(inverted.length, 1);
-
-  const backToBack = api.getEventState(event({ start: '2026-11-12', end: '2026-11-10' }), NOW);
-  assert.equal(backToBack.kind, 'upcoming');
-  assert.equal(backToBack.days, 4);
-});
-
 test('formatCountdown даёт понятные подписи', () => {
-  assert.equal(api.formatCountdown(api.getEventState(event({ start: '2026-11-09' }), NOW)), 'Завтра');
+  assert.equal(api.formatCountdown(api.editionState(edition('2026-11-09'), NOW)), 'Завтра');
+  assert.equal(api.formatCountdown(api.editionState(edition('2026-11-11'), NOW)), 'Через 3 дня');
+  assert.equal(api.formatCountdown(api.editionState(edition('2026-11-08'), NOW)), 'Сегодня');
   assert.equal(
-    api.formatCountdown(api.getEventState(event({ start: '2026-11-11' }), NOW)),
-    'Через 3 дня',
-  );
-  assert.equal(
-    api.formatCountdown(api.getEventState(event({ start: '2026-11-08' }), NOW)),
-    'Сегодня',
-  );
-  assert.equal(
-    api.formatCountdown(api.getEventState(event({ start: '2026-11-07', end: '2026-11-09' }), NOW)),
+    api.formatCountdown(api.editionState(edition('2026-11-07', '2026-11-09'), NOW)),
     'Идёт · день 2 из 3',
   );
   assert.equal(
-    api.formatCountdown(api.getEventState(event({ start: '2026-11-06', end: '2026-11-08' }), NOW)),
+    api.formatCountdown(api.editionState(edition('2026-11-06', '2026-11-08'), NOW)),
     'Последний день',
   );
   assert.equal(
-    api.formatCountdown(api.getEventState(event({ start: '2026-11-01', end: '2026-11-03' }), NOW)),
+    api.formatCountdown(api.editionState(edition('2026-11-01', '2026-11-03'), NOW)),
     'Завершилось 5 дней назад',
   );
   assert.equal(
-    api.formatCountdown(api.getEventState(event({ start: '2026-11-06', end: '2026-11-07' }), NOW)),
+    api.formatCountdown(api.editionState(edition('2026-11-06', '2026-11-07'), NOW)),
     'Завершилось вчера',
   );
-  assert.equal(api.formatCountdown(api.getEventState(event({}), NOW)), 'Дата уточняется');
+  assert.equal(api.formatCountdown(api.editionState({}, NOW)), 'Дата уточняется');
 });
 
-test('sortEvents: текущие, будущие, без даты, прошедшие', () => {
-  const events = [
-    event({ id: 'past-old', title: 'Старое', start: '2026-10-10', end: '2026-10-12' }),
-    event({ id: 'tentative-none', title: 'Без даты' }),
-    event({ id: 'upcoming', title: 'Будущее', start: '2026-12-01' }),
-    event({ id: 'past-recent', title: 'Недавнее', start: '2026-10-30', end: '2026-11-01' }),
-    event({ id: 'tentative-aug', title: 'Август', expectedMonth: '2027-08' }),
-    event({ id: 'ongoing', title: 'Сейчас', start: '2026-11-07', end: '2026-11-09' }),
-    event({ id: 'tentative-jul', title: 'Июль', expectedMonth: '2027-07' }),
-  ];
-
-  const order = api.sortEvents(events, NOW).map((item) => item.event.id);
-  assert.deepEqual(order, [
-    'ongoing',
-    'upcoming',
-    'tentative-jul',
-    'tentative-aug',
-    'tentative-none',
-    'past-recent',
-    'past-old',
-  ]);
-});
-
-test('filterEvents учитывает вкладку и настройки', () => {
-  const events = [
-    event({ id: 'upcoming', start: '2026-12-01' }),
-    event({ id: 'ongoing', start: '2026-11-07', end: '2026-11-09' }),
-    event({ id: 'tentative' }),
-    event({ id: 'past', start: '2026-10-01', end: '2026-10-02' }),
-  ];
-  const settings = { showPast: true, showTentative: true };
-
-  const ids = (items) => items.map((item) => item.event.id);
-
-  assert.deepEqual(ids(api.filterEvents(events, 'upcoming', settings, NOW)), [
-    'ongoing',
-    'upcoming',
-    'tentative',
-  ]);
-  assert.deepEqual(ids(api.filterEvents(events, 'past', settings, NOW)), ['past']);
-  assert.deepEqual(ids(api.filterEvents(events, 'all', settings, NOW)), [
-    'ongoing',
-    'upcoming',
-    'tentative',
-    'past',
-  ]);
-
-  assert.deepEqual(
-    ids(api.filterEvents(events, 'all', { showPast: false, showTentative: true }, NOW)),
-    ['ongoing', 'upcoming', 'tentative'],
-  );
-  assert.deepEqual(
-    ids(api.filterEvents(events, 'upcoming', { showPast: true, showTentative: false }, NOW)),
-    ['ongoing', 'upcoming'],
-  );
-
-  assert.equal(api.countForMode(events, 'all', settings, NOW), 4);
-  assert.equal(api.countForMode(events, 'past', settings, NOW), 1);
-});
-
-test('pickHero возвращает ближайшее текущее или будущее событие', () => {
-  const items = api.sortEvents(
-    [
-      event({ id: 'tentative', title: 'Без даты' }),
-      event({ id: 'upcoming', title: 'Будущее', start: '2026-12-01' }),
-      event({ id: 'past', title: 'Прошлое', start: '2026-10-01' }),
+test('getNearestEdition и getLastPastEdition выбирают правильные проведения', () => {
+  const event = makeEvent({
+    editions: [
+      edition('2027-07-15', '2027-07-17', 'Алтайский край'),
+      edition('2026-11-10', '2026-11-12', 'Новосибирск'),
+      edition('2025-11-05', '2025-11-07', 'Новосибирск'),
+      edition('2024-11-06', '2024-11-08', 'Новосибирск'),
     ],
-    NOW,
-  );
+  });
 
-  const hero = api.pickHero(items);
-  assert.ok(hero);
-  assert.equal(hero.event.id, 'upcoming');
+  assert.equal(api.getNearestEdition(event, NOW).start, '2026-11-10');
+  assert.equal(api.getLastPastEdition(event, NOW).start, '2025-11-05');
+  assert.equal(api.getPastEditions(event, NOW).length, 2);
 
-  assert.equal(api.pickHero(api.sortEvents([event({})], NOW)), null);
+  const ongoing = makeEvent({
+    editions: [edition('2026-11-07', '2026-11-09'), edition('2026-12-01')],
+  });
+  assert.equal(api.getNearestEdition(ongoing, NOW).start, '2026-11-07');
+
+  assert.equal(api.getNearestEdition(makeEvent(), NOW), null);
+  assert.equal(api.getLastPastEdition(makeEvent(), NOW), null);
+});
+
+test('getEventState учитывает ближайшее, ориентир и прошлое', () => {
+  const upcoming = makeEvent({
+    editions: [edition('2026-11-10', '2026-11-12'), edition('2025-11-05', '2025-11-07')],
+  });
+  assert.equal(api.getEventState(upcoming, NOW).kind, 'upcoming');
+  assert.equal(api.getEventState(upcoming, NOW).days, 2);
+
+  const withExpected = makeEvent({
+    expectedMonth: '2027-07',
+    editions: [edition('2026-07-16', '2026-07-18')],
+  });
+  assert.equal(api.getEventState(withExpected, NOW).kind, 'tentative');
+
+  const pastOnly = makeEvent({ editions: [edition('2026-07-16', '2026-07-18')] });
+  assert.equal(api.getEventState(pastOnly, NOW).kind, 'past');
+
+  assert.equal(api.getEventState(makeEvent(), NOW).kind, 'tentative');
+
+  const staleExpected = makeEvent({
+    expectedMonth: '2026-07',
+    editions: [edition('2025-07-03', '2025-07-05')],
+  });
+  assert.equal(api.getEventState(staleExpected, NOW).kind, 'past');
+
+  const currentExpected = makeEvent({ expectedMonth: '2026-11' });
+  assert.equal(api.getEventState(currentExpected, NOW).kind, 'tentative');
+});
+
+test('buildItem показывает ближайшее проведение и «прошлый раз»', () => {
+  const fieldDay = makeEvent({
+    id: 'field-day',
+    title: 'День поля',
+    expectedMonth: '2027-07',
+    editions: [
+      edition('2026-07-16', '2026-07-18', 'Алтайский край · Сибирский агропарк'),
+      edition('2025-07-03', '2025-07-05', 'Волгоградская область · КФХ «Чердынцев»'),
+      edition('2024-06-20', '2024-06-22', 'Ставропольский край · МВД «МинводыЭКСПО»'),
+    ],
+  });
+
+  const item = api.buildItem(fieldDay, 'upcoming', NOW);
+  assert.equal(item.display, null);
+  assert.equal(item.state.kind, 'tentative');
+  assert.ok(item.lastPast);
+  assert.equal(item.lastPast.start, '2026-07-16');
+  assert.equal(item.lastPast.place, 'Алтайский край · Сибирский агропарк');
+  assert.equal(item.history.length, 3);
+
+  const agroneweek = makeEvent({
+    id: 'agroneweek',
+    editions: [
+      edition('2026-11-10', '2026-11-12', 'Новосибирск'),
+      edition('2025-11-05', '2025-11-07', 'Новосибирск'),
+    ],
+  });
+  const upcomingItem = api.buildItem(agroneweek, 'upcoming', NOW);
+  assert.equal(upcomingItem.display.start, '2026-11-10');
+  assert.equal(upcomingItem.lastPast.start, '2025-11-05');
+  assert.equal(upcomingItem.history.length, 1);
+
+  const pastItem = api.buildItem(agroneweek, 'past', NOW);
+  assert.equal(pastItem.display.start, '2025-11-05');
+  assert.equal(pastItem.displayState.kind, 'past');
+});
+
+test('buildItems фильтрует и сортирует события', () => {
+  const events = api.normalizeData(null).events;
+  const settings = Object.assign({}, api.DEFAULT_SETTINGS);
+
+  const upcoming = api.buildItems(events, 'upcoming', settings, NOW);
+  assert.deepEqual(ids(upcoming), ['agroneweek', 'field-day', 'technoprom']);
+
+  const all = api.buildItems(events, 'all', settings, NOW);
+  assert.deepEqual(ids(all), ['agroneweek', 'field-day', 'technoprom']);
+
+  const past = api.buildItems(events, 'past', settings, NOW);
+  assert.equal(past.length, 3);
+  assert.deepEqual(past.map((item) => item.display.start), [
+    '2026-08-26',
+    '2026-07-16',
+    '2025-11-05',
+  ]);
+
+  assert.equal(api.buildItems(events, 'upcoming', { showTentative: false }, NOW).length, 1);
+  assert.equal(api.buildItems(events, 'past', { showPast: false }, NOW).length, 0);
+
+  const noPast = api.buildItems(events, 'all', { showPast: false }, NOW);
+  assert.equal(noPast.length, 3);
+
+  assert.equal(api.countForMode(events, 'upcoming', settings, NOW), 3);
+  assert.equal(api.countForMode(events, 'past', settings, NOW), 3);
+});
+
+test('событие только с прошлым не попадает во вкладку «Предстоящие»', () => {
+  const pastOnly = api.normalizeEvent({
+    id: 'archive',
+    title: 'Архивное событие',
+    editions: [{ start: '2024-05-01', end: '2024-05-02', place: 'Москва' }],
+  });
+  const events = [pastOnly];
+  const settings = Object.assign({}, api.DEFAULT_SETTINGS);
+
+  assert.equal(api.buildItems(events, 'upcoming', settings, NOW).length, 0);
+  assert.equal(api.buildItems(events, 'all', settings, NOW).length, 1);
+  assert.equal(api.buildItems(events, 'past', settings, NOW).length, 1);
+
+  const item = api.buildItem(pastOnly, 'all', NOW);
+  assert.equal(item.state.kind, 'past');
+  assert.equal(item.display.start, '2024-05-01');
 });
 
 test('buildSections группирует по месяцам и статусам', () => {
-  const sections = api.buildSections(
-    api.sortEvents(
-      [
-        event({ id: 'a', start: '2026-12-01' }),
-        event({ id: 'b', start: '2026-12-03' }),
-        event({ id: 'c', start: '2027-01-15' }),
-        event({ id: 'd' }),
-        event({ id: 'e', start: '2026-10-01', end: '2026-10-02' }),
-      ],
-      NOW,
-    ),
-    'all',
-  );
+  const events = api.normalizeData(null).events;
+  const settings = Object.assign({}, api.DEFAULT_SETTINGS);
 
+  const sections = api.buildSections(api.buildItems(events, 'all', settings, NOW), 'all');
   assert.deepEqual(
     sections.map((section) => section.title),
-    ['Декабрь 2026', 'Январь 2027', 'Дата уточняется', 'Прошедшие'],
+    ['Ноябрь 2026', 'Дата уточняется'],
   );
 
-  const upcomingSections = api.buildSections(
-    api.sortEvents([event({ id: 'a', start: '2026-12-01' })], NOW),
-    'upcoming',
-  );
-  assert.equal(upcomingSections.length, 1);
-  assert.equal(upcomingSections[0].title, '');
+  const pastSections = api.buildSections(api.buildItems(events, 'past', settings, NOW), 'past');
+  assert.equal(pastSections.length, 1);
+  assert.equal(pastSections[0].title, '');
+
+  const onlyUpcoming = api.buildItems([events[0]], 'upcoming', settings, NOW);
+  const flat = api.buildSections(onlyUpcoming, 'upcoming');
+  assert.equal(flat.length, 1);
+  assert.equal(flat[0].title, '');
 });
 
-test('normalizeEvent приводит данные к безопасному виду', () => {
-  const normalized = api.normalizeEvent({
+test('pickHero возвращает ближайшее текущее или будущее событие', () => {
+  const events = api.normalizeData(null).events;
+  const items = api.buildItems(events, 'upcoming', api.DEFAULT_SETTINGS, NOW);
+  const hero = api.pickHero(items);
+  assert.ok(hero);
+  assert.equal(hero.event.id, 'agroneweek');
+
+  const fieldDay = events.find((event) => event.id === 'field-day');
+  assert.equal(api.pickHero([api.buildItem(fieldDay, 'upcoming', NOW)]), null);
+});
+
+/* ---------------- Нормализация ---------------- */
+
+test('normalizeEvent переносит старые данные в проведения', () => {
+  const migrated = api.normalizeEvent({
+    id: 'technoprom',
     title: '  Технопром  ',
     start: '2026-08-26',
     end: '2026-08-20',
+    place: 'Новосибирск',
+    previous: '2025 — 27–30 августа',
     url: 'форумтехнопром.рф',
-    category: '',
   });
 
-  assert.equal(normalized.title, 'Технопром');
-  assert.equal(normalized.start, '2026-08-26');
-  assert.equal(normalized.end, '');
-  assert.equal(normalized.url, 'https://форумтехнопром.рф');
-  assert.equal(normalized.category, 'Другое');
-  assert.equal(normalized.tentative, false);
-  assert.ok(normalized.id);
-
-  const tentative = api.normalizeEvent({ title: 'День поля', expectedMonth: '2027-07' });
-  assert.equal(tentative.tentative, true);
-  assert.equal(tentative.start, '');
-  assert.equal(tentative.expectedMonth, '2027-07');
-
-  const badMonth = api.normalizeEvent({ title: 'Х', expectedMonth: '2027-13' });
-  assert.equal(badMonth.expectedMonth, '');
+  assert.equal(migrated.title, 'Технопром');
+  assert.equal(migrated.editions.length, 1);
+  assert.equal(migrated.editions[0].start, '2026-08-26');
+  assert.equal(migrated.editions[0].end, '');
+  assert.equal(migrated.editions[0].place, 'Новосибирск');
+  assert.equal(migrated.historyNote, '2025 — 27–30 августа');
+  assert.equal(migrated.url, 'https://форумтехнопром.рф');
+  assert.deepEqual(migrated.sync.sources, ['https://форумтехнопром.рф']);
+  assert.equal(migrated.sync.enabled, true);
 });
 
-test('normalizeData не теряет пустой список событий', () => {
+test('normalizeEvent сортирует и дедублирует проведения', () => {
+  const normalized = api.normalizeEvent({
+    title: 'Событие',
+    expectedMonth: '2027-13',
+    editions: [
+      { start: '2025-01-10', end: '2025-01-11', place: 'A' },
+      { start: '2026-01-10', end: '2026-01-11', place: 'B' },
+      { start: '2025-01-10', end: '2025-01-11', place: 'C' },
+      { start: '', place: 'D' },
+      { start: '2027-02-30' },
+    ],
+  });
+
+  assert.equal(normalized.expectedMonth, '');
+  assert.deepEqual(
+    normalized.editions.map((edition) => edition.start),
+    ['2026-01-10', '2025-01-10'],
+  );
+  assert.equal(normalized.editions[1].place, 'A');
+});
+
+test('normalizeData: события по умолчанию и настройки', () => {
   const seeded = api.normalizeData(null);
   assert.equal(seeded.events.length, 3);
   assert.deepEqual(
-    seeded.events.map((item) => item.id),
+    seeded.events.map((event) => event.id),
     ['agroneweek', 'technoprom', 'field-day'],
   );
+  seeded.events.forEach((event) => {
+    assert.equal(event.editions.length, 3);
+    assert.ok(event.url.startsWith('https://'));
+    assert.equal(event.sync.enabled, true);
+    assert.ok(event.sync.sources.length > 0);
+  });
+
+  const fieldDay = seeded.events.find((event) => event.id === 'field-day');
+  assert.equal(fieldDay.editions[0].start, '2026-07-16');
+  assert.match(fieldDay.editions[0].place, /Алтайский край/);
+  assert.match(fieldDay.editions[0].place, /Сибирский агропарк/);
+  assert.equal(fieldDay.expectedMonth, '2027-07');
+
   assert.deepEqual(seeded.settings, api.DEFAULT_SETTINGS);
 
   const empty = api.normalizeData({ events: [], settings: { showPast: false } });
   assert.deepEqual(empty.events, []);
   assert.equal(empty.settings.showPast, false);
-  assert.equal(empty.settings.showTentative, true);
+  assert.equal(empty.settings.syncIntervalHours, 12);
 
-  const filtered = api.normalizeData({ events: [{ title: '   ' }, { title: 'Ок' }] });
-  assert.equal(filtered.events.length, 1);
-  assert.equal(filtered.events[0].title, 'Ок');
+  const titleOnly = api.normalizeData({ events: [{ title: 'Без даты' }] });
+  assert.equal(titleOnly.events.length, 1);
+
+  assert.equal(api.normalizeData({ settings: { syncIntervalHours: 5 } }).settings.syncIntervalHours, 12);
+  assert.equal(api.normalizeData({ settings: { syncIntervalHours: 24 } }).settings.syncIntervalHours, 24);
 });
 
-test('parseCodeBlockOptions читает параметры блока', () => {
-  const options = api.parseCodeBlockOptions(
-    [
-      'view: all',
-      'limit: 3',
-      'hero: false',
-      'filters: no',
-      'compact: true',
-      'title: "Мои события"',
-    ].join('\n'),
+/* ---------------- Разбор страниц ---------------- */
+
+const ALTAI_TEXT = `
+<html><head><title>Всероссийский день поля — 2026</title></head>
+<body><h1>Всероссийский день поля</h1>
+<p>С 16 по 18 июля 2026 года в Алтайском крае на площадке «Сибирский агропарк»
+пройдёт главная полевая выставка страны.</p>
+</body></html>`;
+
+const JSON_LD_PAGE = `
+<html><head><title>Всероссийский день поля 2027</title>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Event",
+  "name": "Всероссийский день поля",
+  "startDate": "2027-07-15",
+  "endDate": "2027-07-17",
+  "location": {
+    "@type": "Place",
+    "name": "Сибирский агропарк",
+    "address": {
+      "@type": "PostalAddress",
+      "addressRegion": "Алтайский край",
+      "addressLocality": "пос. Прутской"
+    }
+  }
+}
+</script></head>
+<body><h1>Всероссийский день поля</h1><p>С 15 по 17 июля 2027 года.</p></body></html>`;
+
+test('findDateRanges распознаёт русские форматы дат', () => {
+  const ranges = api.findDateRanges(
+    'С 16 по 18 июля 2026 года, затем 10–12 ноября 2026, ' +
+      'далее 28 февраля — 2 марта 2027 и 30 декабря — 2 января 2027.',
+    2026,
+    NOW,
   );
 
-  assert.equal(options.view, 'all');
-  assert.equal(options.limit, 3);
-  assert.equal(options.showHero, false);
-  assert.equal(options.showFilters, false);
-  assert.equal(options.compact, true);
-  assert.equal(options.title, 'Мои события');
-
-  const invalid = api.parseCodeBlockOptions('view: вчера\nlimit: -2\nhero: может быть');
-  assert.equal(invalid.view, undefined);
-  assert.equal(invalid.limit, undefined);
-  assert.equal(invalid.showHero, true);
-  assert.deepEqual(api.parseCodeBlockOptions(''), {});
+  assert.deepEqual(
+    ranges.map((range) => [range.start, range.end]),
+    [
+      ['2026-07-16', '2026-07-18'],
+      ['2026-11-10', '2026-11-12'],
+      ['2027-02-28', '2027-03-02'],
+      ['2026-12-30', '2027-01-02'],
+    ],
+  );
 });
 
-test('события по умолчанию корректны', () => {
-  assert.equal(api.DEFAULT_EVENTS.length, 3);
+test('findDateRanges выводит год для диапазона без года', () => {
+  const ranges = api.findDateRanges('Выставка пройдёт 10–12 ноября.', 2026, NOW);
+  assert.equal(ranges.length, 1);
+  assert.equal(ranges[0].start, '2026-11-10');
+  assert.equal(ranges[0].explicitYear, false);
 
-  const ids = api.DEFAULT_EVENTS.map((item) => item.id);
-  assert.deepEqual(ids, ['agroneweek', 'technoprom', 'field-day']);
+  const later = api.todayDayNumber(new Date(2027, 2, 1)); // 1 марта 2027
+  const nextYear = api.findDateRanges('Выставка пройдёт 10–12 ноября.', 2026, later);
+  assert.equal(nextYear[0].start, '2027-11-10');
+});
 
-  const agroneweek = api.getEventState(api.DEFAULT_EVENTS[0], NOW);
-  assert.equal(agroneweek.kind, 'upcoming');
-  assert.equal(api.formatRangeRu('2026-11-10', '2026-11-12'), '10–12 ноября 2026');
+test('findDateRanges не разбирает даты внутри скриптов', () => {
+  const html = '<script>var d = "16–18 июля 2026";</script><p>Без дат</p>';
+  assert.deepEqual(api.findDateRanges(api.stripHtml(html), 2026, NOW), []);
+});
 
-  api.DEFAULT_EVENTS.forEach((item) => {
-    assert.ok(item.title);
-    assert.ok(item.url.startsWith('https://'));
-    assert.ok(item.category);
+test('parseJsonLdEvents читает schema.org Event', () => {
+  const events = api.parseJsonLdEvents(JSON_LD_PAGE);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].start, '2027-07-15');
+  assert.equal(events[0].end, '2027-07-17');
+  assert.match(events[0].place, /Алтайский край/);
+  assert.match(events[0].place, /Сибирский агропарк/);
+  assert.equal(events[0].method, 'json-ld');
+
+  assert.deepEqual(api.parseJsonLdEvents('<script type="application/ld+json">не json</script>'), []);
+  assert.deepEqual(api.parseJsonLdEvents('<p>Без разметки</p>'), []);
+});
+
+test('parseEventPage находит дату и место в тексте', () => {
+  const parsed = api.parseEventPage(ALTAI_TEXT, {
+    title: 'День поля',
+    nowDay: NOW,
+    sourceUrl: 'https://russian-field-day.ru/',
   });
+
+  const candidate = parsed.candidates[0];
+  assert.equal(candidate.start, '2026-07-16');
+  assert.equal(candidate.end, '2026-07-18');
+  assert.equal(candidate.place, 'Алтайский край · Сибирский агропарк');
+  assert.equal(candidate.sourceUrl, 'https://russian-field-day.ru/');
+  assert.ok(candidate.confidence >= 0.7);
+});
+
+test('parseEventPage отдаёт приоритет JSON-LD', () => {
+  const parsed = api.parseEventPage(JSON_LD_PAGE, { title: 'День поля', nowDay: NOW });
+  assert.ok(parsed.candidates.length >= 1);
+  const top = parsed.candidates[0];
+  assert.equal(top.method, 'json-ld');
+  assert.equal(top.start, '2027-07-15');
+  assert.ok(top.confidence > 0.9);
+});
+
+test('pickSyncCandidate выбирает будущее, а не архив', () => {
+  const candidates = [
+    { start: '2026-07-16', end: '2026-07-18', confidence: 0.95, place: 'Алтай' },
+    { start: '2027-07-15', end: '2027-07-17', confidence: 0.7, place: 'Алтай' },
+  ];
+  assert.equal(api.pickSyncCandidate(candidates, NOW).start, '2027-07-15');
+
+  const pastOnly = [
+    { start: '2026-07-16', end: '2026-07-18', confidence: 0.95 },
+    { start: '2025-07-03', end: '2025-07-05', confidence: 0.9 },
+  ];
+  assert.equal(api.pickSyncCandidate(pastOnly, NOW), null);
+
+  const farFuture = [{ start: '2029-07-15', end: '2029-07-17', confidence: 0.95 }];
+  assert.equal(api.pickSyncCandidate(farFuture, NOW), null);
+});
+
+test('applySyncCandidate добавляет автоматическое проведение', () => {
+  const event = makeEvent({
+    id: 'field-day',
+    expectedMonth: '2027-07',
+    editions: [edition('2026-07-16', '2026-07-18', 'Алтайский край · Сибирский агропарк')],
+  });
+  const candidate = {
+    start: '2027-07-15',
+    end: '2027-07-17',
+    place: 'Алтайский край · Сибирский агропарк',
+    confidence: 0.9,
+    sourceUrl: 'https://russian-field-day.ru/',
+  };
+
+  const result = api.applySyncCandidate(event, candidate, '2026-11-08T10:00:00.000Z', NOW);
+  assert.equal(result.action, 'added');
+  assert.equal(result.event.editions.length, 2);
+  const added = result.event.editions.find((item) => item.start === '2027-07-15');
+  assert.ok(added);
+  assert.equal(added.source, 'auto');
+  assert.equal(added.checkedAt, '2026-11-08T10:00:00.000Z');
+  assert.equal(result.event.expectedMonth, '2027-07');
+  // исходный объект не мутирован
+  assert.equal(event.editions.length, 1);
+});
+
+test('applySyncCandidate уточняет место у существующей даты', () => {
+  const event = makeEvent({
+    editions: [edition('2027-07-15', '2027-07-17', '')],
+  });
+  const result = api.applySyncCandidate(
+    event,
+    {
+      start: '2027-07-15',
+      end: '2027-07-17',
+      place: 'Алтайский край · Сибирский агропарк',
+      sourceUrl: 'https://russian-field-day.ru/',
+    },
+    '2026-11-08T10:00:00.000Z',
+    NOW,
+  );
+
+  assert.equal(result.action, 'updated');
+  assert.equal(result.event.editions[0].place, 'Алтайский край · Сибирский агропарк');
+  assert.equal(result.event.editions[0].sourceUrl, 'https://russian-field-day.ru/');
+});
+
+test('applySyncCandidate не перезаписывает ручную дату', () => {
+  const event = makeEvent({
+    editions: [edition('2027-07-01', '2027-07-03', 'Москва', { source: 'manual' })],
+  });
+  const result = api.applySyncCandidate(
+    event,
+    { start: '2027-07-15', end: '2027-07-17', place: 'Алтай', confidence: 0.9 },
+    '2026-11-08T10:00:00.000Z',
+    NOW,
+  );
+
+  assert.equal(result.action, 'conflict');
+  assert.match(result.conflict, /^На сайте: 15–17 июля 2027/);
+  assert.equal(result.event.editions.length, 1);
+  assert.equal(result.event.editions[0].start, '2027-07-01');
+});
+
+test('applySyncCandidate заменяет прежнюю авто-дату и игнорирует прошлое', () => {
+  const event = makeEvent({
+    editions: [
+      edition('2027-07-01', '2027-07-03', 'Москва', { source: 'auto' }),
+      edition('2026-07-16', '2026-07-18', 'Алтай'),
+    ],
+  });
+  const result = api.applySyncCandidate(
+    event,
+    { start: '2027-07-15', end: '2027-07-17', place: 'Алтай' },
+    '2026-11-08T10:00:00.000Z',
+    NOW,
+  );
+
+  assert.equal(result.action, 'added');
+  assert.equal(result.event.editions.length, 2);
+  assert.equal(result.event.editions.filter((item) => item.source === 'auto').length, 1);
+  assert.equal(result.event.editions.find((item) => item.source === 'auto').start, '2027-07-15');
+
+  const pastCandidate = api.applySyncCandidate(
+    event,
+    { start: '2026-07-16', end: '2026-07-18', place: 'Алтай' },
+    '2026-11-08T10:00:00.000Z',
+    NOW,
+  );
+  assert.equal(pastCandidate.action, 'none');
+});
+
+test('syncEventWithFetcher обновляет событие и пишет статус', async () => {
+  const event = api.normalizeEvent({
+    id: 'field-day',
+    title: 'День поля',
+    expectedMonth: '2027-07',
+    editions: [{ start: '2026-07-16', end: '2026-07-18', place: 'Алтайский край' }],
+    sync: { sources: ['https://russian-field-day.ru/'] },
+  });
+
+  const result = await api.syncEventWithFetcher(
+    event,
+    async () => JSON_LD_PAGE,
+    { nowDay: NOW, nowISO: '2026-11-08T10:00:00.000Z' },
+  );
+
+  assert.equal(result.action, 'added');
+  assert.equal(result.event.editions.length, 2);
+  assert.equal(result.event.sync.lastSync, '2026-11-08T10:00:00.000Z');
+  assert.match(result.event.sync.lastResult, /15–17 июля 2027/);
+  assert.ok(result.event.sync.lastResult.includes('Алтайский край'));
+  assert.equal(result.errors.length, 0);
+  assert.match(result.message, /^Найдено: 15–17 июля 2027/);
+});
+
+test('syncEventWithFetcher фиксирует ошибки источников', async () => {
+  const event = api.normalizeEvent({
+    id: 'technoprom',
+    title: 'Технопром',
+    url: 'https://форумтехнопром.рф/',
+    editions: [{ start: '2026-08-26', end: '2026-08-28' }],
+  });
+
+  const result = await api.syncEventWithFetcher(
+    event,
+    async () => {
+      throw new Error('HTTP 403');
+    },
+    { nowDay: NOW, nowISO: '2026-11-08T10:00:00.000Z' },
+  );
+
+  assert.equal(result.action, 'none');
+  assert.equal(result.errors.length, 1);
+  assert.match(result.event.sync.lastError, /HTTP 403/);
+  assert.equal(result.message, 'Не удалось получить данные');
+
+  const empty = await api.syncEventWithFetcher(event, async () => '<p>Ничего нет</p>', {
+    nowDay: NOW,
+    nowISO: '2026-11-08T10:00:00.000Z',
+  });
+  assert.equal(empty.action, 'none');
+  assert.equal(empty.message, 'Даты не найдены');
+});
+
+test('summarizeSyncResults собирает сводку', () => {
+  const summary = api.summarizeSyncResults([
+    { action: 'added', errors: [] },
+    { action: 'updated', errors: [] },
+    { action: 'conflict', errors: [] },
+    { action: 'none', errors: ['HTTP 500'] },
+  ]);
+  assert.match(summary, /новых дат: 1/);
+  assert.match(summary, /уточнено: 1/);
+  assert.match(summary, /расхождений с сайтом: 1/);
+  assert.match(summary, /не удалось проверить: 1/);
+
+  assert.match(api.summarizeSyncResults([]), /изменений нет/);
 });

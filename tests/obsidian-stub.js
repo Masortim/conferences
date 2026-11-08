@@ -258,6 +258,24 @@ function createObsidianStub() {
 
   class MarkdownRenderer {}
 
+  let requestUrlImpl = async () => {
+    throw new Error('requestUrl не настроен в тесте');
+  };
+
+  function requestUrl(options) {
+    return requestUrlImpl(options);
+  }
+
+  requestUrl.setImpl = (implementation) => {
+    requestUrlImpl = implementation;
+  };
+
+  requestUrl.reset = () => {
+    requestUrlImpl = async () => {
+      throw new Error('requestUrl не настроен в тесте');
+    };
+  };
+
   return {
     Plugin,
     ItemView,
@@ -268,6 +286,7 @@ function createObsidianStub() {
     MarkdownRenderChild,
     MarkdownRenderer,
     setIcon,
+    requestUrl,
     moment: {},
   };
 }
