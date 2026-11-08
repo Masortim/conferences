@@ -481,6 +481,15 @@
   background: var(--interactive-accent-hover);
 }
 
+.ct-primary-btn:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.ct-hero-action {
+  margin-top: 10px;
+}
+
 /* ---------- Компактный режим (внутри заметки) ---------- */
 
 .ct-widget--compact {

@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { setupDom, loadPluginModule } = require('./helpers');
+const { sampleEvents } = require('./fixtures');
 
 let jsdomAvailable = true;
 try {
@@ -29,7 +30,7 @@ function createFakePlugin(events) {
   const settings = Object.assign({}, api.DEFAULT_SETTINGS);
   return {
     data: {
-      events: events || api.normalizeData(null).events,
+      events: events || sampleEvents(api),
       settings,
     },
     settings,
@@ -122,17 +123,8 @@ test('виджет рисует ближайшее событие, места и
     'Прошлый раз: 16–18 июля 2026 · Алтайский край · Сибирский агропарк, пос. Прутской',
   );
 
-  const historyItems = Array.from(fieldDay.querySelectorAll('.ct-history-item'));
-  assert.equal(historyItems.length, 3);
-  assert.equal(
-    historyItems[0].querySelector('.ct-history-date').textContent,
-    '16–18 июля 2026',
-  );
-  assert.match(
-    historyItems[0].querySelector('.ct-history-place').textContent,
-    /Алтайский край/,
-  );
-  assert.match(historyItems[1].textContent, /Волгоградская область/);
+  // Показывается только одно актуальное прошлое проведение — без архива.
+  assert.equal(fieldDay.querySelector('.ct-history'), null);
 
   const agroneweek = cardByTitle(root, 'Агронеделя');
   const agroneweekMeta = metaTexts(agroneweek);
@@ -180,9 +172,8 @@ test('вкладка «Прошедшие» показывает архив с �
   assert.match(fieldDay.querySelector('.ct-badge').textContent, /^Завершилось/);
   assert.equal(fieldDay.querySelector('.ct-meta--past'), null);
 
-  const history = fieldDay.querySelector('.ct-history');
-  assert.ok(history);
-  assert.equal(history.querySelectorAll('.ct-history-item').length, 3);
+  assert.equal(fieldDay.querySelector('.ct-history'), null);
+  assert.equal(fieldDay.querySelector('.ct-meta--past'), null);
 });
 
 test('настройки скрывают прошедшие и неуточнённые события', { skip }, () => {
@@ -239,6 +230,34 @@ test('автоматически найденные даты помечаютс�
   const conflict = card.querySelector('.ct-sync-conflict');
   assert.ok(conflict);
   assert.match(conflict.textContent, /^На сайте: 5–6 мая 2027/);
+});
+
+test('без загруженных дат виджет показывает плейсхолдер и кнопку «Обновить»', { skip }, () => {
+  const events = api.normalizeData(null).events;
+  assert.ok(events.every((event) => event.editions.length === 0));
+
+  const plugin = createFakePlugin(events);
+  const root = container();
+  api.renderWidget(root, plugin, {
+    now: NOW,
+    showHeader: true,
+    showFilters: true,
+    showHero: true,
+  });
+
+  assert.equal(cards(root).length, 3);
+  const hero = root.querySelector('.ct-hero');
+  assert.ok(hero, 'плейсхолдер занимает место крупного блока');
+  assert.equal(hero.dataset.state, 'tentative');
+  assert.match(hero.textContent, /Дата уточняется/);
+  assert.match(hero.textContent, /официальных сайтов/);
+
+  const refresh = Array.from(root.querySelectorAll('button')).find(
+    (button) => button.textContent === 'Обновить',
+  );
+  assert.ok(refresh, 'есть кнопка «Обновить»');
+  refresh.click();
+  assert.equal(plugin.syncAllCalls, 1);
 });
 
 test('пустой список подсказывает добавить событие', { skip }, () => {
@@ -370,7 +389,7 @@ test('режим «Дата уточняется» сохраняет ориен
 
 test('история в модальном окне: добавление, удаление и сохранение', { skip }, async () => {
   const calls = [];
-  const events = api.normalizeData(null).events;
+  const events = sampleEvents(api);
   const agroneweek = events.find((event) => event.id === 'agroneweek');
   const plugin = createFakePlugin();
   plugin.upsertEvent = async (payload) => {
@@ -382,13 +401,13 @@ test('история в модальном окне: добавление, уд�
 
   assert.equal(modal.tentative, false);
   assert.equal(modal.nextStart, '2026-11-10');
-  assert.equal(modal.history.length, 2);
-  assert.equal(modal.contentEl.querySelectorAll('.ct-history-row').length, 2);
+  assert.equal(modal.history.length, 1);
+  assert.equal(modal.contentEl.querySelectorAll('.ct-history-row').length, 1);
 
   findButton(modal.contentEl, '+ Добавить проведение').click();
-  assert.equal(modal.contentEl.querySelectorAll('.ct-history-row').length, 3);
+  assert.equal(modal.contentEl.querySelectorAll('.ct-history-row').length, 2);
 
-  const lastRow = modal.contentEl.querySelectorAll('.ct-history-row')[2];
+  const lastRow = modal.contentEl.querySelectorAll('.ct-history-row')[1];
   const lastDates = lastRow.querySelectorAll('input[type="date"]');
   lastDates[0].value = '2023-11-08';
   lastDates[0].dispatchEvent(new window.Event('input'));
@@ -400,23 +419,81 @@ test('история в модальном окне: добавление, уд�
 
   await modal.save();
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].editions.length, 4);
+  assert.equal(calls[0].editions.length, 3);
   assert.equal(calls[0].expectedMonth, '2027-11');
   assert.ok(calls[0].editions.some((edition) => edition.start === '2023-11-08'));
 
   const modal2 = new api.EventModal({}, plugin, agroneweek);
   modal2.open();
   modal2.contentEl.querySelectorAll('.ct-history-row')[0].querySelector('button').click();
-  assert.equal(modal2.contentEl.querySelectorAll('.ct-history-row').length, 1);
+  assert.equal(modal2.contentEl.querySelectorAll('.ct-history-row').length, 0);
 
   await modal2.save();
   assert.equal(calls.length, 2);
-  assert.equal(calls[1].editions.length, 2);
+  assert.equal(calls[1].editions.length, 1);
+});
+
+test('форма не показывает и не сохраняет проведения вне разрешённых регионов', { skip }, async () => {
+  const calls = [];
+  const event = api.normalizeEvent({
+    id: 'field-day',
+    title: 'День поля',
+    regions: ['Алтай'],
+    editions: [
+      { start: '2026-07-16', end: '2026-07-18', place: 'Алтайский край · Сибирский агропарк' },
+      { start: '2025-07-03', end: '2025-07-05', place: 'Волгоградская область · КФХ «Чердынцев»' },
+    ],
+  });
+  const plugin = createFakePlugin();
+  plugin.upsertEvent = async (payload) => {
+    calls.push(payload);
+  };
+
+  const modal = new api.EventModal({}, plugin, event);
+  modal.open();
+
+  assert.equal(modal.contentEl.querySelectorAll('.ct-history-row').length, 1);
+  assert.match(
+    modal.contentEl.querySelector('.ct-history-row input[type="text"]').value,
+    /Алтайский край/,
+  );
+
+  // Пробуем добавить будущее проведение в чужом регионе — форма не сохраняет.
+  const toggle = modal.contentEl.querySelector('input[type="checkbox"]');
+  toggle.checked = false;
+  toggle.dispatchEvent(new window.Event('change'));
+
+  const dateInputs = modal.contentEl.querySelectorAll('input[type="date"]');
+  dateInputs[0].value = '2027-07-15';
+  dateInputs[0].dispatchEvent(new window.Event('input'));
+
+  const placeInput = modal.contentEl.querySelector(
+    'input[placeholder="Например, Алтайский край · Сибирский агропарк"]',
+  );
+  placeInput.value = 'Омская область · Экспоцентр';
+  placeInput.dispatchEvent(new window.Event('input'));
+
+  await modal.save();
+  assert.equal(calls.length, 0);
+  assert.ok(
+    Array.from(modal.contentEl.querySelectorAll('.ct-error')).some((node) =>
+      node.textContent.includes('вне разрешённых регионов'),
+    ),
+  );
+
+  placeInput.value = 'Алтайский край · Сибирский агропарк';
+  placeInput.dispatchEvent(new window.Event('input'));
+
+  await modal.save();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].regions, ['Алтай']);
+  assert.equal(calls[0].editions.length, 2);
+  assert.ok(calls[0].editions.some((edition) => edition.start === '2027-07-15'));
 });
 
 test('модальное окно не сохраняет дубли дат', { skip }, async () => {
   const calls = [];
-  const events = api.normalizeData(null).events;
+  const events = sampleEvents(api);
   const agroneweek = events.find((event) => event.id === 'agroneweek');
   const plugin = createFakePlugin();
   plugin.upsertEvent = async (payload) => {
