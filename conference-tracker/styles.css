@@ -1,0 +1,574 @@
+/* Conference Tracker — стили виджета.
+   Используются переменные темы Obsidian, поэтому виджет автоматически
+   подхватывает светлую и тёмную тему. */
+
+.ct-widget {
+  --ct-radius: var(--radius-m, 8px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small, 13px);
+  line-height: 1.45;
+}
+
+.ct-widget-title {
+  font-size: var(--font-ui-medium, 15px);
+  font-weight: 600;
+}
+
+/* ---------- Заголовок ---------- */
+
+.ct-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ct-header-text {
+  min-width: 0;
+}
+
+.ct-title {
+  font-size: var(--font-ui-medium, 15px);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.ct-subtitle {
+  margin-top: 1px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 11px);
+}
+
+.ct-header-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.ct-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-s, 4px);
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.ct-icon-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.ct-icon-btn:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.ct-icon-btn .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+
+/* ---------- Фильтры ---------- */
+
+.ct-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-m, 8px);
+  background: var(--background-secondary);
+}
+
+.ct-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px 5px;
+  border: none;
+  border-radius: var(--radius-s, 5px);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 11px);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ct-tab:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.ct-tab.is-active {
+  background: var(--background-primary);
+  color: var(--text-normal);
+  box-shadow: var(--shadow-s, 0 1px 2px rgba(0, 0, 0, 0.15));
+  font-weight: 600;
+}
+
+.ct-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-tab-count {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+}
+
+.ct-tab.is-active .ct-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-tab-count {
+  flex-shrink: 0;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* ---------- Ближайшее событие ---------- */
+
+.ct-hero {
+  position: relative;
+  overflow: hidden;
+  padding: 12px 14px;
+  border-radius: var(--ct-radius);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 4px solid var(--ct-accent, var(--interactive-accent));
+  background: var(--background-primary);
+  background:
+    radial-gradient(
+      120% 140% at 100% 0%,
+      color-mix(in srgb, var(--ct-accent, var(--interactive-accent)) 18%, transparent),
+      transparent 60%
+    ),
+    var(--background-primary);
+}
+
+.ct-hero[data-state="ongoing"] {
+  --ct-accent: var(--color-green, #2ea043);
+}
+
+.ct-hero-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 11px);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ct-hero-title {
+  margin-top: 2px;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.ct-hero-count {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ct-hero-num {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ct-accent, var(--interactive-accent));
+}
+
+.ct-hero-unit,
+.ct-hero-text {
+  font-size: var(--font-ui-small, 13px);
+  font-weight: 600;
+}
+
+.ct-hero-unit-note {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 11px);
+}
+
+.ct-hero-date {
+  margin-top: 6px;
+  font-weight: 600;
+}
+
+.ct-hero-place {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 11px);
+}
+
+/* ---------- Секции и карточки ---------- */
+
+.ct-section-title {
+  margin: 2px 0 -2px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ct-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ct-card {
+  --ct-accent: var(--interactive-accent);
+  position: relative;
+  display: flex;
+  gap: 4px;
+  padding: 9px 10px 9px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--ct-accent);
+  border-radius: var(--ct-radius);
+  background: var(--background-primary);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.ct-widget--inline .ct-card,
+.ct-widget--inline .ct-hero {
+  background-color: var(--background-secondary);
+}
+
+.ct-card:hover {
+  background-color: var(--background-secondary-alt, var(--background-secondary));
+}
+
+.ct-card[data-state="past"] {
+  opacity: 0.72;
+}
+
+.ct-card[data-state="ongoing"] {
+  background-color: var(--background-modifier-success, var(--background-secondary));
+}
+
+.ct-card[data-category="Форум"],
+.ct-hero[data-category="Форум"] {
+  --ct-accent: var(--color-blue, #4c8bf5);
+}
+
+.ct-card[data-category="Выставка"],
+.ct-hero[data-category="Выставка"] {
+  --ct-accent: var(--color-green, #2ea043);
+}
+
+.ct-card[data-category="Конференция"],
+.ct-hero[data-category="Конференция"] {
+  --ct-accent: var(--color-purple, #a371f7);
+}
+
+.ct-card[data-category="День поля"],
+.ct-hero[data-category="День поля"] {
+  --ct-accent: var(--color-orange, #d29922);
+}
+
+.ct-card[data-category="Другое"],
+.ct-hero[data-category="Другое"] {
+  --ct-accent: var(--text-faint);
+}
+
+.ct-card-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ct-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ct-card-titles {
+  min-width: 0;
+}
+
+.ct-card-title {
+  font-size: var(--font-ui-small, 13.5px);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ct-card-subtitle {
+  margin-top: 1px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller, 11px);
+}
+
+.ct-badge {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.ct-badge[data-state="ongoing"] {
+  background: var(--background-modifier-success, rgba(46, 160, 67, 0.18));
+  color: var(--text-success, var(--color-green, #2ea043));
+}
+
+.ct-badge[data-state="past"] {
+  background: transparent;
+  color: var(--text-faint);
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.ct-badge[data-state="tentative"] {
+  background: transparent;
+  border: 1px dashed var(--background-modifier-border);
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+.ct-meta {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 11.5px);
+}
+
+.ct-meta-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--text-faint);
+}
+
+.ct-meta-icon .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.ct-meta-text {
+  overflow-wrap: anywhere;
+}
+
+.ct-card-note {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 11.5px);
+}
+
+.ct-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 7px;
+}
+
+.ct-chip {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  background: color-mix(in srgb, var(--ct-accent, var(--interactive-accent)) 16%, transparent);
+  color: var(--text-normal);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ct-link {
+  color: var(--link-color, var(--interactive-accent));
+  font-size: var(--font-ui-smaller, 11.5px);
+  text-decoration: none;
+}
+
+.ct-link:hover {
+  text-decoration: underline;
+}
+
+.ct-previous {
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.ct-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.ct-card:hover .ct-card-actions,
+.ct-card:focus-within .ct-card-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .ct-card-actions {
+    opacity: 1;
+  }
+}
+
+.ct-card-actions .ct-icon-btn {
+  width: 22px;
+  height: 22px;
+}
+
+.ct-card-actions .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---------- Пустое состояние ---------- */
+
+.ct-empty {
+  padding: 16px 12px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--ct-radius);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.ct-empty-title {
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+.ct-empty-text {
+  margin-top: 3px;
+  font-size: var(--font-ui-smaller, 11px);
+}
+
+.ct-primary-btn {
+  margin-top: 10px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--radius-s, 5px);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: var(--font-ui-smaller, 12px);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ct-primary-btn:hover {
+  background: var(--interactive-accent-hover);
+}
+
+/* ---------- Компактный режим (внутри заметки) ---------- */
+
+.ct-widget--compact {
+  gap: 8px;
+}
+
+.ct-widget--compact .ct-hero {
+  padding: 10px 12px;
+}
+
+.ct-widget--compact .ct-hero-num {
+  font-size: 24px;
+}
+
+.ct-widget--compact .ct-card {
+  padding: 7px 9px 7px 10px;
+}
+
+.ct-widget--compact .ct-card-title {
+  font-size: var(--font-ui-small, 13px);
+}
+
+.ct-widget--compact .ct-badge {
+  font-size: 9.5px;
+}
+
+.ct-widget--compact .ct-card-actions {
+  opacity: 0.55;
+}
+
+/* ---------- Модальные окна ---------- */
+
+.ct-modal .setting-item {
+  padding: 6px 0;
+}
+
+.ct-input-wide {
+  width: 100%;
+}
+
+.ct-modal-section {
+  border-left: 2px solid var(--background-modifier-border);
+  padding-left: 10px;
+  margin-bottom: 6px;
+}
+
+.ct-modal-text {
+  color: var(--text-muted);
+}
+
+.ct-form-errors {
+  margin: 4px 0 8px;
+}
+
+.ct-error {
+  padding: 5px 8px;
+  border-radius: var(--radius-s, 4px);
+  background: var(--background-modifier-error, rgba(255, 0, 0, 0.12));
+  color: var(--text-error, var(--color-red, #e5534b));
+  font-size: var(--font-ui-smaller, 11.5px);
+}
+
+.ct-error + .ct-error {
+  margin-top: 4px;
+}
+
+/* ---------- Настройки ---------- */
+
+.ct-settings-intro,
+.ct-settings-note {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller, 12px);
+}
+
+.ct-settings-note {
+  margin-bottom: 12px;
+}
+
+.ct-settings-heading {
+  margin-top: 22px;
+}
+
+/* ---------- Панель в боковой области ---------- */
+
+.ct-panel {
+  padding: 10px 12px 18px;
+}
+
+.ct-panel .ct-widget {
+  padding-bottom: 4px;
+}

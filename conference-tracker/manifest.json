@@ -1,0 +1,10 @@
+{
+  "id": "conference-tracker",
+  "name": "Conference Tracker",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Виджет для отслеживания дат форумов, выставок и конференций: обратный отсчёт, ближайшее событие, встраивание в заметки.",
+  "author": "Masortim",
+  "authorUrl": "https://github.com/Masortim",
+  "isDesktopOnly": false
+}
