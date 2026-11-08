@@ -277,7 +277,7 @@ test('syncEventById обновляет событие и сохраняет да
   const event = plugin.getEvents().find((item) => item.id === 'field-day');
   assert.ok(event.editions.some((edition) => edition.start === '2027-07-15'));
   assert.equal(plugin.settings.lastSyncSummary.includes('новых дат: 1'), true);
-  assert.ok(plugin.savedData.events.find((item) => item.id === 'field-day').editions.length >= 4);
+  assert.equal(plugin.savedData.events.find((item) => item.id === 'field-day').editions.length, 2);
   assert.match(obsidian.Notice.messages.at(-1), /^День поля: Найдено: 15–17 июля 2027/);
 });
 

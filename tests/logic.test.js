@@ -199,7 +199,7 @@ test('buildItem показывает ближайшее проведение и 
   assert.ok(item.lastPast);
   assert.equal(item.lastPast.start, '2026-07-16');
   assert.equal(item.lastPast.place, 'Алтайский край · Сибирский агропарк');
-  assert.equal(item.history.length, 3);
+  assert.equal(item.history.length, 1);
 
   const agroneweek = makeEvent({
     id: 'agroneweek',
@@ -212,6 +212,18 @@ test('buildItem показывает ближайшее проведение и 
   assert.equal(upcomingItem.display.start, '2026-11-10');
   assert.equal(upcomingItem.lastPast.start, '2025-11-05');
   assert.equal(upcomingItem.history.length, 1);
+
+  const pastOnly = makeEvent({
+    editions: [edition('2025-05-01', '2025-05-02', 'Москва')],
+  });
+  const pastOnlyItem = api.buildItem(pastOnly, 'upcoming', NOW);
+  assert.equal(pastOnlyItem.lastPast.start, '2025-05-01');
+  assert.equal(pastOnlyItem.history.length, 1);
+
+  const oldOnly = makeEvent({ editions: [edition('2024-05-01', '2024-05-02', 'Москва')] });
+  const oldItem = api.buildItem(oldOnly, 'all', NOW);
+  assert.equal(oldItem.lastPast, null);
+  assert.equal(oldItem.history.length, 0);
 
   const pastItem = api.buildItem(agroneweek, 'past', NOW);
   assert.equal(pastItem.display.start, '2025-11-05');
@@ -246,22 +258,69 @@ test('buildItems фильтрует и сортирует события', () =>
   assert.equal(api.countForMode(events, 'past', settings, NOW), 3);
 });
 
-test('событие только с прошлым не попадает во вкладку «Предстоящие»', () => {
-  const pastOnly = api.normalizeEvent({
-    id: 'archive',
-    title: 'Архивное событие',
+test('в архив попадают только текущий и прошлый год', () => {
+  const lastYear = api.normalizeEvent({
+    id: 'last-year',
+    title: 'Прошлогоднее событие',
+    editions: [{ start: '2025-05-01', end: '2025-05-02', place: 'Москва' }],
+  });
+  const old = api.normalizeEvent({
+    id: 'old',
+    title: 'Старое событие',
     editions: [{ start: '2024-05-01', end: '2024-05-02', place: 'Москва' }],
   });
-  const events = [pastOnly];
   const settings = Object.assign({}, api.DEFAULT_SETTINGS);
 
-  assert.equal(api.buildItems(events, 'upcoming', settings, NOW).length, 0);
-  assert.equal(api.buildItems(events, 'all', settings, NOW).length, 1);
-  assert.equal(api.buildItems(events, 'past', settings, NOW).length, 1);
+  assert.equal(api.buildItems([lastYear], 'upcoming', settings, NOW).length, 0);
+  assert.equal(api.buildItems([lastYear], 'past', settings, NOW).length, 1);
+  assert.equal(api.buildItems([lastYear], 'all', settings, NOW).length, 1);
+  assert.equal(api.buildItems([old], 'upcoming', settings, NOW).length, 0);
+  assert.equal(api.buildItems([old], 'past', settings, NOW).length, 0);
+  assert.equal(api.buildItems([old], 'all', settings, NOW).length, 0);
 
-  const item = api.buildItem(pastOnly, 'all', NOW);
+  const item = api.buildItem(lastYear, 'all', NOW);
   assert.equal(item.state.kind, 'past');
-  assert.equal(item.display.start, '2024-05-01');
+  assert.equal(item.display.start, '2025-05-01');
+  assert.equal(item.lastPast.start, '2025-05-01');
+});
+
+test('getRelevantPastEdition выбирает текущий или прошлый год', () => {
+  const currentPast = makeEvent({
+    editions: [
+      edition('2026-08-26', '2026-08-28'),
+      edition('2025-08-27', '2025-08-30'),
+      edition('2024-08-27', '2024-08-30'),
+    ],
+  });
+  assert.equal(api.getRelevantPastEdition(currentPast, NOW).start, '2026-08-26');
+
+  const stillUpcoming = makeEvent({
+    editions: [
+      edition('2026-11-10', '2026-11-12'),
+      edition('2025-11-05', '2025-11-07'),
+      edition('2024-11-06', '2024-11-08'),
+    ],
+  });
+  assert.equal(api.getRelevantPastEdition(stillUpcoming, NOW).start, '2025-11-05');
+
+  // Событие уже прошло в этом году, но в этом же году ожидается ещё одно:
+  // по правилу показываем прошлогоднее.
+  const twice = makeEvent({
+    editions: [
+      edition('2026-12-10', '2026-12-11'),
+      edition('2026-08-10', '2026-08-11'),
+      edition('2025-08-10', '2025-08-11'),
+    ],
+  });
+  assert.equal(api.getRelevantPastEdition(twice, NOW).start, '2025-08-10');
+
+  const previousYearOnly = makeEvent({
+    editions: [edition('2025-05-01'), edition('2024-05-01')],
+  });
+  assert.equal(api.getRelevantPastEdition(previousYearOnly, NOW).start, '2025-05-01');
+
+  const tooOld = makeEvent({ editions: [edition('2024-05-01')] });
+  assert.equal(api.getRelevantPastEdition(tooOld, NOW), null);
 });
 
 test('buildSections группирует по месяцам и статусам', () => {
@@ -347,8 +406,13 @@ test('normalizeData: события по умолчанию и настройк�
     seeded.events.map((event) => event.id),
     ['agroneweek', 'technoprom', 'field-day'],
   );
+  const editionsById = {
+    agroneweek: 2,
+    technoprom: 1,
+    'field-day': 1,
+  };
   seeded.events.forEach((event) => {
-    assert.equal(event.editions.length, 3);
+    assert.equal(event.editions.length, editionsById[event.id]);
     assert.ok(event.url.startsWith('https://'));
     assert.equal(event.sync.enabled, true);
     assert.ok(event.sync.sources.length > 0);
@@ -359,6 +423,17 @@ test('normalizeData: события по умолчанию и настройк�
   assert.match(fieldDay.editions[0].place, /Алтайский край/);
   assert.match(fieldDay.editions[0].place, /Сибирский агропарк/);
   assert.equal(fieldDay.expectedMonth, '2027-07');
+  assert.deepEqual(fieldDay.regions, ['Новосибирская область', 'Новосибирск', 'Алтай']);
+  assert.ok(!fieldDay.editions.some((edition) => /Волгоград|Ставропол/.test(edition.place)));
+
+  const technoprom = seeded.events.find((event) => event.id === 'technoprom');
+  assert.equal(technoprom.editions[0].start, '2026-08-26');
+
+  const agroneweek = seeded.events.find((event) => event.id === 'agroneweek');
+  assert.deepEqual(
+    agroneweek.editions.map((edition) => edition.start),
+    ['2026-11-10', '2025-11-05'],
+  );
 
   assert.deepEqual(seeded.settings, api.DEFAULT_SETTINGS);
 
@@ -586,6 +661,75 @@ test('applySyncCandidate заменяет прежнюю авто-дату и и
   assert.equal(pastCandidate.action, 'none');
 });
 
+test('разрешённые регионы скрывают чужие проведения и блокируют автообновление', () => {
+  const event = api.normalizeEvent({
+    id: 'field-day',
+    title: 'День поля',
+    regions: ['Новосибирская область', 'Новосибирск', 'Алтай'],
+    editions: [
+      { start: '2026-07-16', end: '2026-07-18', place: 'Алтайский край · Сибирский агропарк' },
+      { start: '2025-07-03', end: '2025-07-05', place: 'Волгоградская область · КФХ «Чердынцев»' },
+      { start: '2024-06-20', end: '2024-06-22', place: 'Ставропольский край · МВД «МинводыЭКСПО»' },
+    ],
+  });
+
+  // Данные не удаляются, но в интерфейс попадает только разрешённый регион.
+  assert.equal(event.editions.length, 3);
+  assert.equal(api.getPastEditions(event, NOW).length, 1);
+  assert.equal(api.getRelevantPastEdition(event, NOW).start, '2026-07-16');
+
+  const blocked = api.applySyncCandidate(
+    event,
+    { start: '2027-07-15', end: '2027-07-17', place: 'Омская область · Экспоцентр' },
+    '2026-11-08T10:00:00.000Z',
+    NOW,
+  );
+  assert.equal(blocked.action, 'none');
+  assert.equal(blocked.skipped, 'region');
+  assert.equal(blocked.event.editions.length, 3);
+
+  const allowed = api.applySyncCandidate(
+    event,
+    { start: '2027-07-15', end: '2027-07-17', place: 'Новосибирская область · «Практик»' },
+    '2026-11-08T10:00:00.000Z',
+    NOW,
+  );
+  assert.equal(allowed.action, 'added');
+  assert.ok(allowed.event.editions.some((edition) => edition.start === '2027-07-15'));
+
+  const unknownPlace = api.applySyncCandidate(
+    makeEvent({ expectedMonth: '2027-07' }),
+    { start: '2027-07-15', end: '2027-07-17', place: '', regions: ['Алтай'] },
+    '2026-11-08T10:00:00.000Z',
+    NOW,
+  );
+  assert.equal(unknownPlace.action, 'added');
+});
+
+test('syncEventWithFetcher сообщает о дате вне разрешённых регионов', async () => {
+  const event = api.normalizeEvent({
+    id: 'field-day',
+    title: 'День поля',
+    regions: ['Алтай'],
+    sync: { sources: ['https://russian-field-day.ru/'] },
+  });
+
+  const result = await api.syncEventWithFetcher(
+    event,
+    async () =>
+      JSON_LD_PAGE.replace('Алтайский край', 'Омская область').replace(
+        'Сибирский агропарк',
+        'Омский экспоцентр',
+      ),
+    { nowDay: NOW, nowISO: '2026-11-08T10:00:00.000Z' },
+  );
+
+  assert.equal(result.action, 'none');
+  assert.equal(result.skipped, 'region');
+  assert.equal(result.message, 'Дата вне разрешённых регионов');
+  assert.equal(result.event.sync.lastResult, '');
+});
+
 test('syncEventWithFetcher обновляет событие и пишет статус', async () => {
   const event = api.normalizeEvent({
     id: 'field-day',
@@ -650,6 +794,11 @@ test('summarizeSyncResults собирает сводку', () => {
   assert.match(summary, /уточнено: 1/);
   assert.match(summary, /расхождений с сайтом: 1/);
   assert.match(summary, /не удалось проверить: 1/);
+
+  const withRegionSkip = api.summarizeSyncResults([
+    { action: 'none', errors: [], skipped: 'region' },
+  ]);
+  assert.match(withRegionSkip, /вне разрешённых регионов: 1/);
 
   assert.match(api.summarizeSyncResults([]), /изменений нет/);
 });

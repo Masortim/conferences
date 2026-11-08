@@ -68,9 +68,9 @@ const DEFAULT_SETTINGS = {
 };
 
 /**
- * События и история их проведений на 8 ноября 2026 года.
- * Проверено по официальным источникам; места указаны для каждого года,
- * потому что часть мероприятий ежегодно переезжает (например, «День поля»).
+ * События на 8 ноября 2026 года.
+ * Храним только актуальное прошлое (текущий или прошлый год) и только те
+ * регионы «Дня поля», которые интересуют пользователя: НСО и Алтай.
  */
 const DEFAULT_EVENTS = [
   {
@@ -92,11 +92,6 @@ const DEFAULT_EVENTS = [
         end: '2025-11-07',
         place: 'Новосибирск · МВК «Новосибирск Экспоцентр»',
       },
-      {
-        start: '2024-11-06',
-        end: '2024-11-08',
-        place: 'Новосибирск · МВК «Новосибирск Экспоцентр»',
-      },
     ],
     sync: { sources: ['https://sibagroweek.ru/'] },
   },
@@ -114,16 +109,6 @@ const DEFAULT_EVENTS = [
         end: '2026-08-28',
         place: 'Новосибирск · «Новосибирск Экспоцентр»',
       },
-      {
-        start: '2025-08-27',
-        end: '2025-08-30',
-        place: 'Новосибирск · «Новосибирск Экспоцентр»',
-      },
-      {
-        start: '2024-08-27',
-        end: '2024-08-30',
-        place: 'Новосибирск · «Новосибирск Экспоцентр»',
-      },
     ],
     sync: { sources: ['https://форумтехнопром.рф/'] },
   },
@@ -133,23 +118,14 @@ const DEFAULT_EVENTS = [
     fullTitle: 'Всероссийский день поля',
     category: 'День поля',
     url: 'https://russian-field-day.ru/',
-    note: 'Главная полевая выставка страны, ежегодно меняет регион: 2024 — Ставрополье, 2025 — Волгоградская область, 2026 — Алтайский край. Даты и место 2027 года уточняются.',
+    note: 'Всероссийский день поля ежегодно меняет регион; в плагине учитываются только Новосибирская область и Алтайский край. 2026 — Алтайский край, даты и место 2027 года уточняются.',
     expectedMonth: '2027-07',
+    regions: ['Новосибирская область', 'Новосибирск', 'Алтай'],
     editions: [
       {
         start: '2026-07-16',
         end: '2026-07-18',
         place: 'Алтайский край · Сибирский агропарк, пос. Прутской',
-      },
-      {
-        start: '2025-07-03',
-        end: '2025-07-05',
-        place: 'Волгоградская область · КФХ «Чердынцев», Среднеахтубинский район',
-      },
-      {
-        start: '2024-06-20',
-        end: '2024-06-22',
-        place: 'Ставропольский край · МВЦ «МинводыЭКСПО», х. Красный Пахарь',
       },
     ],
     sync: { sources: ['https://russian-field-day.ru/'] },
@@ -370,9 +346,34 @@ function compareEditionsDesc(a, b) {
   return (bStart ? bStart.stamp : 0) - (aStart ? aStart.stamp : 0);
 }
 
+/** Проверяет, попадает ли место проведения в разрешённые регионы события. */
+function editionAllowedInRegions(edition, event) {
+  const regions = event && Array.isArray(event.regions) ? event.regions : [];
+  if (regions.length === 0) return true;
+
+  const place = trimString(edition && edition.place);
+  if (!place) return true; // место неизвестно — не скрываем проведение
+
+  const haystack = place.toLowerCase();
+  return regions.some((region) => haystack.includes(region.toLowerCase()));
+}
+
 function sortedEditions(event) {
   const list = event && Array.isArray(event.editions) ? event.editions.slice() : [];
-  return list.filter((edition) => parseISODate(edition.start)).sort(compareEditionsDesc);
+  return list
+    .filter((edition) => parseISODate(edition.start))
+    .filter((edition) => editionAllowedInRegions(edition, event))
+    .sort(compareEditionsDesc);
+}
+
+function yearFromDay(dayNumber) {
+  const date = new Date(dayNumber * 86400000);
+  return date.getUTCFullYear();
+}
+
+function editionYear(edition) {
+  const parsed = parseISODate(edition && edition.start);
+  return parsed ? parsed.year : 0;
 }
 
 /** Ближайшее текущее или будущее проведение. */
@@ -406,6 +407,33 @@ function getPastEditions(event, nowDay) {
 }
 
 /**
+ * Прошлое проведение, которое интересует пользователя:
+ * текущего года, если оно уже прошло, иначе — прошлого года
+ * (пока проведение текущего года ещё ожидается или не состоялось).
+ */
+function getRelevantPastEdition(event, nowDay) {
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  const currentYear = yearFromDay(today);
+  const past = getPastEditions(event, today);
+
+  const expectedThisYear = sortedEditions(event).some((edition) => {
+    if (editionYear(edition) !== currentYear) return false;
+    const state = editionState(edition, today);
+    return state.kind === 'upcoming' || state.kind === 'ongoing';
+  });
+
+  if (expectedThisYear) {
+    return past.find((edition) => editionYear(edition) === currentYear - 1) || null;
+  }
+
+  return (
+    past.find((edition) => editionYear(edition) === currentYear) ||
+    past.find((edition) => editionYear(edition) === currentYear - 1) ||
+    null
+  );
+}
+
+/**
  * Общее состояние события: состояние ближайшего проведения, иначе
  * «дата уточняется» (если задан ориентир), иначе состояние последнего
  * прошедшего проведения.
@@ -435,8 +463,8 @@ function getEventState(event, nowDay) {
 function buildItem(event, mode, nowDay) {
   const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
   const nearest = getNearestEdition(event, today);
-  const history = getPastEditions(event, today);
-  const lastPast = history[0] || null;
+  const lastPast = getRelevantPastEdition(event, today);
+  const history = lastPast ? [lastPast] : [];
   const state = getEventState(event, today);
 
   let display = nearest;
@@ -478,6 +506,8 @@ function isItemVisible(item, mode, settings) {
     return safeSettings.showTentative !== false;
   }
   if (item.state.kind === 'past') {
+    // Старое прошлое (позапрошлый год и раньше) не показываем вовсе.
+    if (!item.lastPast) return false;
     return safeSettings.showPast !== false;
   }
   return true;
@@ -606,6 +636,18 @@ function normalizeUrl(value) {
   return `https://${url}`;
 }
 
+function normalizeRegions(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((region) => trimString(region))
+        .filter(Boolean)
+        .slice(0, 10),
+    ),
+  );
+}
+
 let idCounter = 0;
 
 function generateId() {
@@ -703,6 +745,7 @@ function normalizeEvent(raw) {
     note: trimString(source.note),
     expectedMonth,
     editions,
+    regions: normalizeRegions(source.regions),
     historyNote: trimString(source.previous) || trimString(source.historyNote),
     sync: normalizeSync(source.sync, url),
     createdAt: trimString(source.createdAt) || new Date().toISOString(),
@@ -1236,6 +1279,11 @@ function applySyncCandidate(event, candidate, nowISO, nowDay) {
   const targetState = editionState({ start: candidate.start, end: candidate.end }, today);
   if (targetState.kind === 'past') return result;
 
+  if (!editionAllowedInRegions({ place: candidate.place }, target)) {
+    result.skipped = 'region';
+    return result;
+  }
+
   const same = target.editions.find((edition) => edition.start === candidate.start);
   if (same) {
     let changed = false;
@@ -1358,6 +1406,12 @@ async function syncEventWithFetcher(event, fetcher, options) {
 
   result.event = updated;
   result.action = applied.action;
+  if (applied.skipped === 'region') {
+    updated.sync.lastResult = '';
+    result.skipped = 'region';
+    result.message = 'Дата вне разрешённых регионов';
+    return result;
+  }
   result.message = applied.conflict || describeSyncAction(applied.action, best);
   return result;
 }
@@ -1376,11 +1430,13 @@ function summarizeSyncResults(results) {
   const added = list.filter((item) => item.action === 'added').length;
   const updated = list.filter((item) => item.action === 'updated').length;
   const conflicts = list.filter((item) => item.action === 'conflict').length;
+  const skipped = list.filter((item) => item.skipped === 'region').length;
   const failed = list.filter((item) => item.errors && item.errors.length > 0 && item.action === 'none').length;
   const parts = [];
   if (added) parts.push(`новых дат: ${added}`);
   if (updated) parts.push(`уточнено: ${updated}`);
   if (conflicts) parts.push(`расхождений с сайтом: ${conflicts}`);
+  if (skipped) parts.push(`вне разрешённых регионов: ${skipped}`);
   if (failed) parts.push(`не удалось проверить: ${failed}`);
   return parts.length > 0 ? `Обновление завершено — ${parts.join(', ')}` : 'Обновление завершено — изменений нет';
 }
@@ -1545,7 +1601,7 @@ function renderBadge(state) {
 
 function renderHistoryDetails(parent, item, compact) {
   const history = item.history || [];
-  if (compact || history.length === 0) return;
+  if (compact || history.length < 2) return;
 
   const details = createElSafe('details', 'ct-history');
   const summary = createElSafe('summary', 'ct-history-summary');
@@ -1941,6 +1997,7 @@ class EventModal extends Modal {
       url: source.url || '',
       note: source.note || '',
       expectedMonth: source.expectedMonth || '',
+      regions: Array.isArray(source.regions) ? source.regions.slice() : [],
       historyNote: source.historyNote || '',
       sync: source.sync ? cloneData(source.sync) : { enabled: true, sources: [] },
     };
@@ -1964,7 +2021,7 @@ class EventModal extends Modal {
         this.nextPlace = nearest.place || '';
       }
       this.tentative = !nearest;
-      this.history = (event.editions || [])
+      this.history = sortedEditions(event)
         .filter((edition) => !nearest || edition.start !== nearest.start)
         .map((edition) => cloneData(edition));
     } else {
@@ -2246,6 +2303,14 @@ class EventModal extends Modal {
           errors.push('Дата окончания не может быть раньше даты начала.');
         }
       }
+      if (
+        this.nextPlace &&
+        !editionAllowedInRegions({ place: this.nextPlace }, this.draft)
+      ) {
+        errors.push(
+          `Место вне разрешённых регионов: ${this.draft.regions.join(', ')}.`,
+        );
+      }
     }
 
     const seen = new Set(this.nextStart ? [this.nextStart] : []);
@@ -2266,6 +2331,11 @@ class EventModal extends Modal {
       }
       if (seen.has(row.start)) {
         errors.push(`Прошлое проведение №${index + 1}: дата ${row.start} уже указана.`);
+      }
+      if (row.place && !editionAllowedInRegions({ place: row.place }, this.draft)) {
+        errors.push(
+          `Прошлое проведение №${index + 1}: место вне разрешённых регионов (${this.draft.regions.join(', ')}).`,
+        );
       }
       seen.add(row.start);
     });
@@ -2897,6 +2967,10 @@ module.exports.__internals = {
   getNearestEdition,
   getLastPastEdition,
   getPastEditions,
+  getRelevantPastEdition,
+  editionAllowedInRegions,
+  normalizeRegions,
+  yearFromDay,
   getEventState,
   buildItem,
   buildItems,
