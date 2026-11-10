@@ -106,6 +106,28 @@ test('editionState определяет фазу проведения', () => {
 
   const tentative = api.editionState({}, NOW);
   assert.equal(tentative.kind, 'tentative');
+
+  const preliminary = api.editionState(
+    edition('2027-07-16', '2027-07-18', '', { tentative: true }),
+    NOW,
+  );
+  assert.equal(preliminary.kind, 'tentative');
+  assert.equal(preliminary.days, null);
+  assert.equal(preliminary.startDay, api.parseISODate('2027-07-16').stamp);
+
+  // Если предварительная дата уже наступила, событие идёт.
+  const ongoingPreliminary = api.editionState(
+    edition('2026-11-07', '2026-11-09', '', { tentative: true }),
+    NOW,
+  );
+  assert.equal(ongoingPreliminary.kind, 'ongoing');
+
+  // Прошедшая предварительная дата остаётся частью истории.
+  const pastPreliminary = api.editionState(
+    edition('2026-07-16', '2026-07-18', '', { tentative: true }),
+    NOW,
+  );
+  assert.equal(pastPreliminary.kind, 'past');
 });
 
 test('formatCountdown даёт понятные подписи', () => {
@@ -180,6 +202,21 @@ test('getEventState учитывает ближайшее, ориентир и �
 
   const currentExpected = makeEvent({ expectedMonth: '2026-11' });
   assert.equal(api.getEventState(currentExpected, NOW).kind, 'tentative');
+
+  const tentativeNext = makeEvent({
+    expectedMonth: '2027-07',
+    editions: [
+      edition('2026-07-16', '2026-07-18', 'Алтай'),
+      edition('2028-07-14', '2028-07-16', 'Алтай', { tentative: true, source: 'auto' }),
+      edition('2027-07-16', '2027-07-18', 'Алтай', { tentative: true, source: 'auto' }),
+    ],
+  });
+  assert.equal(api.getNearestEdition(tentativeNext, NOW), null);
+  assert.equal(api.getTentativeEdition(tentativeNext, NOW).start, '2027-07-16');
+  assert.equal(api.getEventState(tentativeNext, NOW).kind, 'tentative');
+  assert.equal(api.getEventState(tentativeNext, NOW).days, null);
+  assert.equal(api.buildItem(tentativeNext, 'upcoming', NOW).display, null);
+  assert.equal(api.buildItem(tentativeNext, 'upcoming', NOW).tentativeEdition.start, '2027-07-16');
 });
 
 test('buildItem показывает ближайшее проведение и «прошлый раз»', () => {
@@ -379,6 +416,21 @@ test('normalizeEvent переносит старые данные в прове�
   assert.equal(migrated.sync.enabled, true);
 });
 
+test('normalizeEdition: старые авто-даты предварительные, ручные — подтверждённые', () => {
+  const oldAuto = api.normalizeEdition({ start: '2027-07-16', source: 'auto' });
+  assert.equal(oldAuto.tentative, true);
+
+  const confirmedAuto = api.normalizeEdition({
+    start: '2027-07-16',
+    source: 'auto',
+    tentative: false,
+  });
+  assert.equal(confirmedAuto.tentative, false);
+
+  const manual = api.normalizeEdition({ start: '2027-07-16' });
+  assert.equal(manual.tentative, false);
+});
+
 test('normalizeEvent сортирует и дедублирует проведения', () => {
   const normalized = api.normalizeEvent({
     title: 'Событие',
@@ -519,6 +571,7 @@ test('findDateRanges выводит год для диапазона без го
   const later = api.todayDayNumber(new Date(2027, 2, 1)); // 1 марта 2027
   const nextYear = api.findDateRanges('Выставка пройдёт 10–12 ноября.', 2026, later);
   assert.equal(nextYear[0].start, '2027-11-10');
+  assert.equal(nextYear[0].inferredNextYear, true);
 });
 
 test('findDateRanges не разбирает даты внутри скриптов', () => {
@@ -552,6 +605,37 @@ test('parseEventPage находит дату и место в тексте', () 
   assert.equal(candidate.place, 'Алтайский край · Сибирский агропарк');
   assert.equal(candidate.sourceUrl, 'https://russian-field-day.ru/');
   assert.ok(candidate.confidence >= 0.7);
+});
+
+test('дата без года, перенесённая на следующий год, помечается предварительной', () => {
+  const page = `
+<html><head><title>Всероссийский день поля</title></head>
+<body><h1>Всероссийский день поля</h1>
+<p>Мероприятие пройдёт 16–18 июля в Алтайском крае, «Сибирский агропарк».</p>
+</body></html>`;
+
+  const parsed = api.parseEventPage(page, { title: 'День поля', nowDay: NOW });
+  const candidate = parsed.candidates.find((item) => item.start === '2027-07-16');
+  assert.ok(candidate);
+  assert.equal(candidate.tentative, true);
+});
+
+test('дата с явным годом остаётся подтверждённой', () => {
+  const parsed = api.parseEventPage(ALTAI_TEXT, { title: 'День поля', nowDay: NOW });
+  assert.equal(parsed.candidates[0].tentative, false);
+});
+
+test('фраза «даты уточняются» делает найденную дату предварительной', () => {
+  const page = `
+<html><head><title>Технопром 2027</title></head>
+<body><h1>Технопром</h1>
+<p>Даты уточняются. Планируется 25–27 августа 2027 года, Новосибирск.</p>
+</body></html>`;
+
+  const parsed = api.parseEventPage(page, { title: 'Технопром', nowDay: NOW });
+  const candidate = parsed.candidates[0];
+  assert.equal(candidate.start, '2027-08-25');
+  assert.equal(candidate.tentative, true);
 });
 
 test('parseEventPage отдаёт приоритет JSON-LD', () => {
@@ -739,6 +823,66 @@ test('syncEventWithFetcher сообщает о дате вне разрешён�
   assert.equal(result.skipped, 'region');
   assert.equal(result.message, 'Дата вне разрешённых регионов');
   assert.equal(result.event.sync.lastResult, '');
+});
+
+test('синхронизация сохраняет дату без года как предварительную', async () => {
+  const page = `
+<html><head><title>Технопром</title></head>
+<body><h1>Технопром</h1>
+<p>Форум пройдёт 26–28 августа в Новосибирске, «Новосибирск Экспоцентр».</p>
+</body></html>`;
+
+  const event = api.normalizeEvent({
+    id: 'technoprom',
+    title: 'Технопром',
+    sync: { sources: ['https://форумтехнопром.рф/'] },
+  });
+
+  const result = await api.syncEventWithFetcher(event, async () => page, {
+    nowDay: NOW,
+    nowISO: '2026-11-08T10:00:00.000Z',
+  });
+
+  assert.equal(result.action, 'added');
+  assert.equal(result.event.editions[0].start, '2027-08-26');
+  assert.equal(result.event.editions[0].tentative, true);
+  assert.equal(result.event.expectedMonth, '2027-08');
+  assert.equal(api.getNearestEdition(result.event, NOW), null);
+  assert.equal(api.getEventState(result.event, NOW).kind, 'tentative');
+});
+
+test('повторная синхронизация подтверждает дату с явным годом', async () => {
+  const event = api.normalizeEvent({
+    id: 'technoprom',
+    title: 'Технопром',
+    expectedMonth: '2027-08',
+    editions: [
+      {
+        start: '2027-08-26',
+        end: '2027-08-28',
+        place: 'Новосибирск · «Новосибирск Экспоцентр»',
+        source: 'auto',
+        tentative: true,
+      },
+    ],
+    sync: { sources: ['https://форумтехнопром.рф/'] },
+  });
+
+  const page = `
+<html><head><title>Технопром 2027</title></head>
+<body><h1>Технопром</h1>
+<p>Форум пройдёт 26–28 августа 2027 года в Новосибирске, «Новосибирск Экспоцентр».</p>
+</body></html>`;
+
+  const result = await api.syncEventWithFetcher(event, async () => page, {
+    nowDay: NOW,
+    nowISO: '2026-11-08T10:00:00.000Z',
+  });
+
+  assert.equal(result.action, 'updated');
+  assert.equal(result.event.editions[0].tentative, false);
+  assert.equal(api.getEventState(result.event, NOW).kind, 'upcoming');
+  assert.equal(api.getEventState(result.event, NOW).days, 291);
 });
 
 test('syncEventWithFetcher обновляет событие и пишет статус', async () => {

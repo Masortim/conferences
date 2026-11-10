@@ -210,6 +210,7 @@ test('автоматически найденные даты помечаютс�
         end: '2027-05-06',
         place: 'Москва · Экспоцентр',
         source: 'auto',
+        tentative: false,
         checkedAt: '2026-11-08T10:00:00.000Z',
         sourceUrl: 'https://example.ru/',
       },
@@ -292,6 +293,63 @@ test('у идущего события текст подстраивается �
   } finally {
     window.getComputedStyle = original;
   }
+});
+
+test('предварительные даты не показывают точный счётчик дней', { skip }, () => {
+  const fieldDay = api.normalizeEvent({
+    id: 'field-day',
+    title: 'День поля',
+    category: 'День поля',
+    expectedMonth: '2027-07',
+    editions: [
+      { start: '2026-07-16', end: '2026-07-18', place: 'Алтайский край' },
+      {
+        start: '2027-07-16',
+        end: '2027-07-18',
+        place: 'Алтайский край',
+        source: 'auto',
+        tentative: true,
+      },
+    ],
+  });
+  const technoprom = api.normalizeEvent({
+    id: 'technoprom',
+    title: 'Технопром',
+    category: 'Форум',
+    expectedMonth: '2027-08',
+    editions: [
+      { start: '2026-08-26', end: '2026-08-28', place: 'Новосибирск' },
+      {
+        start: '2027-08-26',
+        end: '2027-08-28',
+        place: 'Новосибирск',
+        source: 'auto',
+        tentative: true,
+      },
+    ],
+  });
+
+  const root = container();
+  api.renderWidget(root, createFakePlugin([fieldDay, technoprom]), {
+    now: NOW,
+    showHeader: true,
+    showFilters: true,
+    showHero: true,
+  });
+
+  assert.equal(cards(root).length, 2);
+  const text = root.textContent;
+  assert.doesNotMatch(text, /Через \d+ (?:день|дня|дней)/);
+  assert.match(text, /Ориентир: июль 2027/);
+  assert.match(text, /Ориентир: август 2027/);
+
+  const badges = Array.from(root.querySelectorAll('.ct-badge')).map((badge) => badge.textContent);
+  assert.deepEqual(badges, ['Дата уточняется', 'Дата уточняется']);
+
+  const hero = root.querySelector('.ct-hero');
+  assert.ok(hero);
+  assert.match(hero.textContent, /Следующие даты уточняются/);
+  assert.match(hero.textContent, /Ориентир: июль 2027 · август 2027/);
 });
 
 test('пустой список подсказывает добавить событие', { skip }, () => {
@@ -391,6 +449,42 @@ test('модальное окно редактирует дату, место и
   assert.equal(calls[0].expectedMonth, '');
   assert.equal(modal.isOpen, false);
   assert.ok(obsidian.Notice.messages.includes('Событие добавлено'));
+});
+
+test('модальное окно сохраняет предварительную дату и ориентир', { skip }, async () => {
+  const calls = [];
+  const plugin = createFakePlugin();
+  plugin.upsertEvent = async (payload) => {
+    calls.push(payload);
+  };
+  const event = api.normalizeEvent({
+    id: 'field-day',
+    title: 'День поля',
+    category: 'День поля',
+    expectedMonth: '2027-07',
+    editions: [
+      {
+        start: '2027-07-16',
+        end: '2027-07-18',
+        place: 'Алтайский край',
+        source: 'auto',
+        tentative: true,
+      },
+    ],
+  });
+
+  const modal = new api.EventModal({}, plugin, event);
+  modal.open();
+  assert.equal(modal.tentative, true);
+  assert.ok(modal.tentativeEdition);
+  assert.equal(modal.draft.expectedMonth, '2027-07');
+
+  await modal.save();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].editions.length, 1);
+  assert.equal(calls[0].editions[0].start, '2027-07-16');
+  assert.equal(calls[0].editions[0].tentative, true);
+  assert.equal(calls[0].expectedMonth, '2027-07');
 });
 
 test('режим «Дата уточняется» сохраняет ориентир без проведения', { skip }, async () => {
