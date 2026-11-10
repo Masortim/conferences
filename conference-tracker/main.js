@@ -260,6 +260,12 @@ function editionState(edition, nowDay) {
   const endDay = endParsed && endParsed.stamp >= startDay ? endParsed.stamp : startDay;
   const length = endDay - startDay + 1;
 
+  // Предварительная дата не даёт точного счётчика «через N дней».
+  // Если она уже наступила, событие действительно идёт — показываем «Идёт».
+  if (source.tentative === true && today < startDay) {
+    return { kind: 'tentative', startDay, endDay, length, days: null, daysAgo: null };
+  }
+
   if (today < startDay) {
     return { kind: 'upcoming', startDay, endDay, length, days: startDay - today, daysAgo: null };
   }
@@ -372,6 +378,15 @@ function getLastPastEdition(event, nowDay) {
   return past[0] || null;
 }
 
+/** Ближайшее предварительное (ещё не подтверждённое) проведение. */
+function getTentativeEdition(event, nowDay) {
+  const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
+  const candidates = sortedEditions(event)
+    .filter((edition) => editionState(edition, today).kind === 'tentative')
+    .sort((a, b) => parseISODate(a.start).stamp - parseISODate(b.start).stamp);
+  return candidates[0] || null;
+}
+
 function getPastEditions(event, nowDay) {
   const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
   return sortedEditions(event).filter((edition) => editionState(edition, today).kind === 'past');
@@ -423,6 +438,10 @@ function getEventState(event, nowDay) {
     return { kind: 'tentative', startDay: null, endDay: null, length: 0, days: null, daysAgo: null };
   }
 
+  if (getTentativeEdition(event, today)) {
+    return { kind: 'tentative', startDay: null, endDay: null, length: 0, days: null, daysAgo: null };
+  }
+
   if (lastPast) return editionState(lastPast, today);
 
   return { kind: 'tentative', startDay: null, endDay: null, length: 0, days: null, daysAgo: null };
@@ -435,6 +454,7 @@ function buildItem(event, mode, nowDay) {
   const today = Number.isFinite(nowDay) ? nowDay : todayDayNumber();
   const nearest = getNearestEdition(event, today);
   const lastPast = getRelevantPastEdition(event, today);
+  const tentativeEdition = nearest ? null : getTentativeEdition(event, today);
   const history = lastPast ? [lastPast] : [];
   const state = getEventState(event, today);
 
@@ -454,6 +474,7 @@ function buildItem(event, mode, nowDay) {
     state,
     nearest,
     lastPast,
+    tentativeEdition,
     history,
     display,
     displayState,
@@ -645,6 +666,11 @@ function normalizeEdition(raw) {
     source: source.source === 'auto' ? 'auto' : 'manual',
     sourceUrl: normalizeUrl(source.sourceUrl),
     checkedAt: trimString(source.checkedAt),
+    // Старые авто-даты без явного признака считаем предварительными:
+    // они могли быть выведены из текста без года. Повторная синхронизация
+    // подтвердит дату, если на сайте есть точный год или JSON-LD.
+    tentative:
+      source.tentative === undefined ? source.source === 'auto' : source.tentative === true,
   };
 }
 
@@ -950,11 +976,19 @@ function findDateRanges(text, referenceYear, nowDay) {
     return consumed.some((range) => start < range.end && end > range.start);
   }
 
-  function push(start, end, index, length, explicitYear) {
+  function push(start, end, index, length, explicitYear, inferredNextYear) {
     if (!start) return;
     if (overlaps(index, index + length)) return;
     consumed.push({ start: index, end: index + length });
-    results.push({ start, end: end || start, index, explicitYear: !!explicitYear });
+    results.push({
+      start,
+      end: end || start,
+      index,
+      explicitYear: !!explicitYear,
+      // Дата без года, которую пришлось перенести на следующий год:
+      // это лишь предположение, а не подтверждённое расписание.
+      inferredNextYear: !!inferredNextYear,
+    });
   }
 
   function inferYear(month, day) {
@@ -1018,6 +1052,7 @@ function findDateRanges(text, referenceYear, nowDay) {
       match.index,
       match[0].length,
       !!(match[3] || match[6]),
+      !match[3] && !match[6] && yearFrom > referenceYear,
     );
   }
 
@@ -1053,6 +1088,7 @@ function findDateRanges(text, referenceYear, nowDay) {
       match.index,
       match[0].length,
       false,
+      inferred.year > referenceYear,
     );
   }
 
@@ -1156,6 +1192,21 @@ function extractReferenceYear(html, text, nowDay) {
 }
 
 /**
+ * Явная пометка «даты уточняются» рядом с найденным диапазоном.
+ * В этом случае дата сохраняется как предварительная, без точного счётчика.
+ */
+function mentionsTentativeDate(text) {
+  const value = String(text || '');
+  return (
+    /(?:даты|дата|сроки)[^.!?]{0,60}(?:уточняются|уточняется|уточнят|уточним|не объявлен|не определ[её]н|неизвестн|будут объявлен|будет объявлен|станут известн|будут известн)/i.test(
+      value,
+    ) ||
+    /(?:предварительн|ориентировочн)[^.!?]{0,50}(?:дата|даты|сроки|проведен)/i.test(value) ||
+    /\b(?:TBD|to be announced)\b/i.test(value)
+  );
+}
+
+/**
  * Разбирает страницу мероприятия и возвращает кандидатов на дату/место.
  */
 function parseEventPage(html, options) {
@@ -1168,7 +1219,7 @@ function parseEventPage(html, options) {
   const candidates = [];
 
   parseJsonLdEvents(html).forEach((item) => {
-    candidates.push(Object.assign({}, item, { sourceUrl }));
+    candidates.push(Object.assign({}, item, { sourceUrl, tentative: false }));
   });
 
   findDateRanges(text, referenceYear, nowDay).forEach((range) => {
@@ -1193,6 +1244,7 @@ function parseEventPage(html, options) {
         method: 'text',
         confidence,
         sourceUrl,
+        tentative: range.inferredNextYear || mentionsTentativeDate(around),
       });
     }
   });
@@ -1305,6 +1357,14 @@ function applySyncCandidate(event, candidate, nowISO, nowDay, options) {
       same.sourceUrl = candidate.sourceUrl;
       changed = true;
     }
+    if (
+      same.source !== 'manual' &&
+      typeof candidate.tentative === 'boolean' &&
+      same.tentative !== candidate.tentative
+    ) {
+      same.tentative = candidate.tentative;
+      changed = true;
+    }
     same.checkedAt = nowISO;
     if (changed && same.source !== 'manual') same.source = 'auto';
     result.action = changed ? 'updated' : 'confirmed';
@@ -1328,7 +1388,11 @@ function applySyncCandidate(event, candidate, nowISO, nowDay, options) {
 
     target.editions = target.editions.filter((edition) => {
       const state = editionState(edition, today);
-      return !(edition.source === 'auto' && (state.kind === 'upcoming' || state.kind === 'ongoing'));
+      const futureTentative = state.kind === 'tentative' && state.startDay !== null;
+      return !(
+        edition.source === 'auto' &&
+        (state.kind === 'upcoming' || state.kind === 'ongoing' || futureTentative)
+      );
     });
   }
 
@@ -1339,6 +1403,7 @@ function applySyncCandidate(event, candidate, nowISO, nowDay, options) {
     source: 'auto',
     sourceUrl: candidate.sourceUrl,
     checkedAt: nowISO,
+    tentative: candidate.tentative === true,
   });
 
   if (edition) target.editions.push(edition);
@@ -1469,6 +1534,11 @@ async function syncEventWithFetcher(event, fetcher, options) {
 function describeSyncAction(action, candidate) {
   const range = formatRangeRu(candidate.start, candidate.end);
   const place = candidate.place ? ` · ${candidate.place}` : '';
+  if (candidate && candidate.tentative) {
+    if (action === 'added') return `Ориентир: ${range}${place}`;
+    if (action === 'updated') return `Ориентир уточнён: ${range}${place}`;
+    return `Без изменений: ${range}${place}`;
+  }
   if (action === 'added') return `Найдено: ${range}${place}`;
   if (action === 'updated') return `Уточнено: ${range}${place}`;
   if (action === 'confirmed') return `Без изменений: ${range}${place}`;
@@ -1762,23 +1832,43 @@ function renderHero(parent, item) {
  * Плейсхолдер вместо крупного блока, пока с сайтов не загружены даты.
  * Даты и места не хранятся в коде, поэтому первый запуск начинается с этой карточки.
  */
-function renderHeroPlaceholder(parent, plugin) {
+function renderHeroPlaceholder(parent, plugin, options) {
+  const opts = options || {};
+  const knownDates = !!opts.tentativeOnly;
   const hero = createElSafe('div', 'ct-hero');
   hero.dataset.state = 'tentative';
   hero.dataset.category = 'Другое';
 
   hero.appendChild(createElSafe('div', 'ct-hero-label', 'Даты и места'));
-  hero.appendChild(createElSafe('div', 'ct-hero-title', 'Загрузка с официальных сайтов'));
+  hero.appendChild(
+    createElSafe(
+      'div',
+      'ct-hero-title',
+      knownDates ? 'Следующие даты уточняются' : 'Загрузка с официальных сайтов',
+    ),
+  );
 
   const count = createElSafe('div', 'ct-hero-count');
   count.appendChild(createElSafe('span', 'ct-hero-text', 'Дата уточняется'));
   hero.appendChild(count);
 
   hero.appendChild(
-    createElSafe('div', 'ct-hero-date', 'Плагин читает страницы событий и заполняет даты сам.'),
+    createElSafe(
+      'div',
+      'ct-hero-date',
+      knownDates
+        ? opts.hint || 'Организаторы ещё не объявили точные даты.'
+        : 'Плагин читает страницы событий и заполняет даты сам.',
+    ),
   );
   hero.appendChild(
-    createElSafe('div', 'ct-hero-place', 'Если сайт недоступен, дату можно вписать вручную.'),
+    createElSafe(
+      'div',
+      'ct-hero-place',
+      knownDates
+        ? 'Точная дата не считается известной, пока её не подтвердит сайт.'
+        : 'Если сайт недоступен, дату можно вписать вручную.',
+    ),
   );
 
   if (typeof plugin.syncAll === 'function') {
@@ -1859,7 +1949,9 @@ function renderCard(parent, item, context) {
     ? formatRangeRu(edition.start, edition.end)
     : event.expectedMonth
       ? `Ориентир: ${formatMonthRu(event.expectedMonth)}`
-      : 'Дата не указана';
+      : item.tentativeEdition
+        ? `Ориентир: ${formatMonthRu(String(item.tentativeEdition.start).slice(0, 7))}`
+        : 'Дата не указана';
   body.appendChild(createMetaRow('calendar-days', dateText));
 
   const placeText = edition && edition.place ? edition.place : 'Место уточняется';
@@ -2042,7 +2134,18 @@ function renderWidget(container, plugin, options) {
         items.length > 0 &&
         items.every((item) => !item.displayState || item.displayState.kind === 'tentative')
       ) {
-        renderHeroPlaceholder(root, plugin);
+        const hasContext = items.some(
+          (item) => item.event.editions.length > 0 || item.event.expectedMonth,
+        );
+        const months = Array.from(
+          new Set(items.map((item) => item.event.expectedMonth).filter(Boolean)),
+        ).slice(0, 3);
+        renderHeroPlaceholder(root, plugin, {
+          tentativeOnly: hasContext,
+          hint: months.length
+            ? `Ориентир: ${months.map((month) => formatMonthRu(month)).join(' · ')}`
+            : '',
+        });
       }
     }
 
@@ -2223,6 +2326,7 @@ class EventModal extends Modal {
     };
 
     this.nextEdition = null;
+    this.tentativeEdition = null;
     this.history = [];
     this.tentative = false;
     this.nextStart = '';
@@ -2241,8 +2345,20 @@ class EventModal extends Modal {
         this.nextPlace = nearest.place || '';
       }
       this.tentative = !nearest;
+      if (!nearest) {
+        const tentative = getTentativeEdition(event, today);
+        if (tentative) {
+          this.tentativeEdition = cloneData(tentative);
+          if (!this.draft.expectedMonth) {
+            this.draft.expectedMonth = String(tentative.start).slice(0, 7);
+          }
+        }
+      }
       this.history = sortedEditions(event)
         .filter((edition) => !nearest || edition.start !== nearest.start)
+        .filter(
+          (edition) => !this.tentativeEdition || edition.start !== this.tentativeEdition.start,
+        )
         .map((edition) => cloneData(edition));
     } else {
       this.tentative = false;
@@ -2575,6 +2691,13 @@ class EventModal extends Modal {
       );
       if (edition) editions.push(edition);
     });
+
+    if (this.tentative && this.tentativeEdition) {
+      const edition = normalizeEdition(
+        Object.assign({}, this.tentativeEdition, { tentative: true }),
+      );
+      if (edition) editions.push(edition);
+    }
 
     if (!this.tentative && this.nextStart) {
       const edition = normalizeEdition({
@@ -3198,6 +3321,7 @@ module.exports.__internals = {
   formatCountdown,
   getNearestEdition,
   getLastPastEdition,
+  getTentativeEdition,
   getPastEditions,
   getRelevantPastEdition,
   editionAllowedInRegions,
