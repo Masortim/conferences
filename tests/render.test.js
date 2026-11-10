@@ -260,6 +260,40 @@ test('без загруженных дат виджет показывает п�
   assert.equal(plugin.syncAllCalls, 1);
 });
 
+test('у идущего события текст подстраивается под зелёный фон', { skip }, () => {
+  const event = api.normalizeEvent({
+    id: 'ongoing',
+    title: 'Идёт сейчас',
+    category: 'Выставка',
+    editions: [{ start: '2026-11-08', end: '2026-11-10', place: 'Новосибирск' }],
+  });
+  const plugin = createFakePlugin([event]);
+  const original = window.getComputedStyle;
+  window.getComputedStyle = (node) => {
+    if (node && node.classList && node.classList.contains('ct-card')) {
+      return { backgroundColor: 'rgb(124, 199, 124)' };
+    }
+    return original.call(window, node);
+  };
+
+  try {
+    const root = container();
+    api.renderWidget(root, plugin, {
+      now: NOW,
+      showHeader: false,
+      showFilters: false,
+      showHero: false,
+    });
+
+    const card = root.querySelector('.ct-card[data-state="ongoing"]');
+    assert.ok(card, 'карточка идущего события отрисована');
+    assert.equal(card.style.getPropertyValue('--ct-fg'), '#111111');
+    assert.equal(card.style.getPropertyValue('--ct-fg-muted'), 'rgba(17, 17, 17, 0.78)');
+  } finally {
+    window.getComputedStyle = original;
+  }
+});
+
 test('пустой список подсказывает добавить событие', { skip }, () => {
   const root = container();
   const plugin = createFakePlugin([]);
