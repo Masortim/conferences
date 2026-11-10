@@ -1557,6 +1557,121 @@ function clearNode(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
+/**
+ * Разбирает CSS-цвет в {r, g, b, a}. Понимает #rgb/#rrggbb, rgb()/rgba()
+ * и color(srgb ...), которые может вернуть getComputedStyle.
+ * Возвращает null, если цвет задан в неподдерживаемом формате.
+ */
+function parseCssColor(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text || text === 'transparent' || text === 'none') return null;
+
+  let match = /^#([0-9a-f]{3,8})$/.exec(text);
+  if (match) {
+    let hex = match[1];
+    if (hex.length === 3 || hex.length === 4) {
+      hex = hex
+        .split('')
+        .map((char) => char + char)
+        .join('');
+    }
+    if (hex.length !== 6 && hex.length !== 8) return null;
+    return {
+      r: parseInt(hex.slice(0, 2), 16),
+      g: parseInt(hex.slice(2, 4), 16),
+      b: parseInt(hex.slice(4, 6), 16),
+      a: hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1,
+    };
+  }
+
+  match = /^rgba?\(([^)]+)\)$/.exec(text);
+  if (match) {
+    const parts = match[1].split(/[\s,\/]+/).filter(Boolean);
+    if (parts.length < 3) return null;
+    const channel = (part) =>
+      part.endsWith('%') ? (Number.parseFloat(part) / 100) * 255 : Number.parseFloat(part);
+    const alpha = (part) => {
+      if (part === undefined) return 1;
+      const number = part.endsWith('%') ? Number.parseFloat(part) / 100 : Number.parseFloat(part);
+      return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 1;
+    };
+    const color = {
+      r: channel(parts[0]),
+      g: channel(parts[1]),
+      b: channel(parts[2]),
+      a: alpha(parts[3]),
+    };
+    return [color.r, color.g, color.b].every(Number.isFinite) ? color : null;
+  }
+
+  match = /^color\(srgb\s+([^)]+)\)$/.exec(text);
+  if (match) {
+    const parts = match[1].split(/[\s\/]+/).filter(Boolean);
+    if (parts.length < 3) return null;
+    const channel = (part) => {
+      const value = Number.parseFloat(part);
+      const normalized = part.endsWith('%') ? value / 100 : value;
+      return Math.min(1, Math.max(0, normalized)) * 255;
+    };
+    const alpha = (part) => {
+      if (part === undefined) return 1;
+      const value = Number.parseFloat(part);
+      return part.endsWith('%') ? value / 100 : value;
+    };
+    const color = {
+      r: channel(parts[0]),
+      g: channel(parts[1]),
+      b: channel(parts[2]),
+      a: Number.isFinite(alpha(parts[3])) ? Math.min(1, Math.max(0, alpha(parts[3]))) : 1,
+    };
+    return [color.r, color.g, color.b].every(Number.isFinite) ? color : null;
+  }
+
+  return null;
+}
+
+/** Относительная яркость цвета по WCAG. */
+function relativeLuminance(color) {
+  const channel = (value) => {
+    const normalized = Math.min(1, Math.max(0, value / 255));
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b);
+}
+
+/**
+ * Возвращает почти чёрный или белый цвет — тот, что контрастнее на фоне.
+ * Пустая строка означает «фон неизвестен, оставляем цвета темы».
+ */
+function readableTextColor(background) {
+  const color = parseCssColor(background);
+  if (!color || color.a < 0.95) return '';
+  const luminance = relativeLuminance(color);
+  const contrastWithBlack = (luminance + 0.05) / 0.05;
+  const contrastWithWhite = 1.05 / (luminance + 0.05);
+  return contrastWithBlack >= contrastWithWhite ? '#111111' : '#ffffff';
+}
+
+/**
+ * Идущая карточка получает зелёный фон. Подбираем к нему цвет текста
+ * по фактическому фону, чтобы он оставался читаемым в любой теме.
+ */
+function applyReadableCardText(card) {
+  if (!card || card.dataset.state !== 'ongoing') return '';
+  if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') return '';
+  const computed = window.getComputedStyle(card);
+  const fg = readableTextColor(computed && computed.backgroundColor);
+  if (!fg) return '';
+  card.style.setProperty('--ct-fg', fg);
+  card.style.setProperty(
+    '--ct-fg-muted',
+    fg === '#ffffff' ? 'rgba(255, 255, 255, 0.82)' : 'rgba(17, 17, 17, 0.78)',
+  );
+  return fg;
+}
+
 function addIconButton(parent, iconName, label, onClick) {
   const button = createElSafe('button', 'ct-icon-btn');
   button.type = 'button';
@@ -1976,6 +2091,10 @@ function renderWidget(container, plugin, options) {
       });
       root.appendChild(list);
     });
+
+    // Карточки уже в документе — можно измерить фактический фон
+    // и подобрать к нему читаемый цвет текста.
+    root.querySelectorAll('.ct-card[data-state="ongoing"]').forEach(applyReadableCardText);
   }
 
   draw();
@@ -3104,6 +3223,10 @@ module.exports.__internals = {
   findDateRanges,
   extractPlaceNear,
   parseEventPage,
+  parseCssColor,
+  relativeLuminance,
+  readableTextColor,
+  applyReadableCardText,
   pickSyncCandidate,
   pickPastSyncCandidates,
   applySyncCandidate,

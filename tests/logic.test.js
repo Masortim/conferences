@@ -400,6 +400,23 @@ test('normalizeEvent сортирует и дедублирует проведе
   assert.equal(normalized.editions[1].place, 'A');
 });
 
+test('readableTextColor подбирает контрастный цвет по фактическому фону', () => {
+  assert.deepEqual(api.parseCssColor('#7ac97a'), { r: 122, g: 201, b: 122, a: 1 });
+  assert.deepEqual(api.parseCssColor('rgb(124 199 124 / 50%)'), {
+    r: 124,
+    g: 199,
+    b: 124,
+    a: 0.5,
+  });
+  assert.equal(api.parseCssColor('var(--background-primary)'), null);
+
+  assert.equal(api.readableTextColor('rgb(124, 199, 124)'), '#111111');
+  assert.equal(api.readableTextColor('rgb(20, 60, 30)'), '#ffffff');
+  assert.equal(api.readableTextColor('color(srgb 0.49 0.78 0.49)'), '#111111');
+  assert.equal(api.readableTextColor('rgba(0, 0, 0, 0)'), '');
+  assert.equal(api.readableTextColor('var(--background-primary)'), '');
+});
+
 test('normalizeData: события по умолчанию и настройки', () => {
   const seeded = api.normalizeData(null);
   assert.equal(seeded.events.length, 3);

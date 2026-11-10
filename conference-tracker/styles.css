@@ -265,7 +265,15 @@
 }
 
 .ct-card[data-state="ongoing"] {
-  background-color: var(--background-modifier-success, var(--background-secondary));
+  /* Не используем сплошной success-фон: в некоторых темах он яркий,
+     а текст остаётся светлым. Подмешиваем зелёный к фону темы — так
+     контраст сохраняется и в светлой, и в тёмной теме. */
+  background-color: color-mix(in srgb, var(--color-green, #2ea043) 12%, var(--background-primary));
+  color: var(--ct-fg, var(--text-normal));
+}
+
+.ct-card[data-state="ongoing"]:hover {
+  background-color: color-mix(in srgb, var(--color-green, #2ea043) 18%, var(--background-primary));
 }
 
 .ct-card[data-category="Форум"],
@@ -334,8 +342,8 @@
 }
 
 .ct-badge[data-state="ongoing"] {
-  background: var(--background-modifier-success, rgba(46, 160, 67, 0.18));
-  color: var(--text-success, var(--color-green, #2ea043));
+  background: color-mix(in srgb, var(--color-green, #2ea043) 22%, transparent);
+  color: var(--ct-fg, var(--text-normal));
 }
 
 .ct-badge[data-state="past"] {
@@ -408,6 +416,29 @@
 }
 
 .ct-link:hover {
+  text-decoration: underline;
+}
+
+/* Идущее событие: все оттенки текста выводим из читаемого foreground,
+   который плагин подбирает по реальному фону карточки. */
+.ct-card[data-state="ongoing"] :is(.ct-card-subtitle, .ct-meta, .ct-meta-icon, .ct-card-note, .ct-previous, .ct-sync-conflict) {
+  color: var(--ct-fg-muted, var(--text-muted));
+}
+
+.ct-card[data-state="ongoing"] .ct-meta .ct-meta-text {
+  color: var(--ct-fg-muted, var(--text-muted));
+}
+
+.ct-card[data-state="ongoing"] .ct-chip {
+  color: var(--ct-fg, var(--text-normal));
+}
+
+.ct-card[data-state="ongoing"] .ct-chip--auto {
+  border-color: currentColor;
+}
+
+.ct-card[data-state="ongoing"] .ct-link {
+  color: var(--ct-fg, var(--link-color));
   text-decoration: underline;
 }
 
